@@ -97,11 +97,21 @@ Both live in **System Settings > Privacy & Security**.
 
 - **Automation** — required. Lets the pill see which app is frontmost and
   switch back to your terminal. macOS prompts for this the first time.
-- **Accessibility** — optional, for the final auto-paste only. Add the app
-  that runs the script (Terminal, iTerm, …). macOS shows *no prompt* for
-  this and silently refuses instead, so you have to add it by hand.
+- **Accessibility** — optional, for the final auto-paste only. macOS shows
+  *no prompt* for this and silently refuses instead, so add it by hand:
+  Accessibility > **+**, then ⌘⇧G and paste
+  `~/Applications/Clanno.app`. (Finder search won't find it if your
+  Spotlight index is read-only — navigate to the path directly.)
   Without it, `Cmd+Enter` still compiles and copies everything and tells
   you to paste it yourself.
+
+  Running from a terminal instead of the app? Then the permission belongs
+  to *that terminal*, not to Clanno.
+
+  Re-running `./install.sh` rebuilds and re-signs the bundle ad-hoc, which
+  changes its code identity — macOS may drop the Accessibility grant and
+  you'll need to re-add it. Nothing to do about that short of a real
+  Developer ID certificate.
 
 ## How it decides things
 

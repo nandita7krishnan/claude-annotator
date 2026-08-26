@@ -59,11 +59,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST_EOF
 </plist>
 PLIST_EOF
 
-cat > "$APP/Contents/MacOS/Clanno" <<LAUNCH_EOF
-#!/bin/sh
-exec "$PYTHON" "\$(dirname "\$0")/../Resources/clanno.py"
-LAUNCH_EOF
+# The bundle's executable must BE the interpreter, not a script that execs
+# one. Otherwise the running process lives outside the bundle and macOS
+# attributes Accessibility to python3 rather than to Clanno.
+PYHOME="$("$PYTHON" -c 'import sys; print(sys.prefix)')"
+cp "$PYTHON" "$APP/Contents/MacOS/Clanno"
 chmod +x "$APP/Contents/MacOS/Clanno"
+
+if ! PYTHONHOME="$PYHOME" "$APP/Contents/MacOS/Clanno" -c "import tkinter" >/dev/null 2>&1; then
+  echo "error: the bundled interpreter can't load tkinter (PYTHONHOME=$PYHOME)." >&2
+  exit 1
+fi
 
 # Ad-hoc signature gives TCC a stable identity to hang permissions on.
 if command -v codesign >/dev/null 2>&1; then
@@ -79,7 +85,12 @@ cat > "$PLIST" <<AGENT_EOF
 <dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
-  <array><string>$APP/Contents/MacOS/Clanno</string></array>
+  <array>
+    <string>$APP/Contents/MacOS/Clanno</string>
+    <string>$APP/Contents/Resources/clanno.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PYTHONHOME</key><string>$PYHOME</string></dict>
   <key>RunAtLoad</key><true/>
   <!-- Restart on a crash, but respect quitting via the pill's X. -->
   <key>KeepAlive</key>
@@ -96,6 +107,10 @@ echo "Installed:"
 echo "  app        $APP"
 echo "  login agent $PLIST"
 echo "  logs       /tmp/clanno.err.log"
+echo
+echo "Grant Accessibility to Clanno (for the auto-paste):"
+echo "  System Settings > Privacy & Security > Accessibility > +"
+echo "  then Cmd-Shift-G and paste:  $APP"
 echo
 echo "Clanno now starts at login. Quit it with the pill's X; it stays gone"
 echo "until next login (or: launchctl kickstart gui/$UID/$LABEL)."
