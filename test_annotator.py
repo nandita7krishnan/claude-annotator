@@ -225,9 +225,9 @@ def test_send(fails):
         app.send_to_terminal()  # commits the note still being typed
 
         expected = (
-            "Here's my feedback on your response:\n\n"
-            f'Re: "{SNIPPET_A}"\nshould return 2\n\n'
-            f'Re: "{SNIPPET_B}"\nname this'
+            "Feedback on your response — "
+            'Re: "def foo(): return 1" → should return 2  |  '
+            'Re: "x = compute()" → name this'
         )
         check(fails, get_clipboard() == expected,
               f"compiled:\n{get_clipboard()!r}\nexpected:\n{expected!r}")
@@ -256,8 +256,42 @@ def test_send_without_accessibility(fails):
         check(fails, "Accessibility" in app.status_text,
               f"unhelpful status: {app.status_text!r}")
         check(fails, len(app.items) == 1, "queue lost after a failed paste")
-        check(fails, get_clipboard().startswith("Here's my feedback"),
+        check(fails, get_clipboard().startswith("Feedback on your response"),
               "text not on clipboard as fallback")
+    finally:
+        app.stop()
+        root.destroy()
+
+
+def test_compact_is_one_line(fails):
+    """The whole point: Claude Code only collapses multi-line pastes."""
+    root, app = build(FakeScript())
+    try:
+        copies(app, SNIPPET_A)          # a snippet that contains a newline
+        app.note_entry.insert(0, "should return 2")
+        app.add_item()
+        app.note_entry.insert(0, "general point")
+        app.add_note_only()
+        out = app.compile_text()
+        check(fails, "\n" not in out, f"compact output has newlines: {out!r}")
+        check(fails, "def foo(): return 1" in out, f"snippet mangled: {out!r}")
+        check(fails, "general point" in out, f"note-only lost: {out!r}")
+    finally:
+        app.stop()
+        root.destroy()
+
+
+def test_block_mode_still_available(fails):
+    root, app = build(FakeScript())
+    try:
+        app.compact = False
+        copies(app, SNIPPET_A)
+        app.note_entry.insert(0, "should return 2")
+        app.add_item()
+        out = app.compile_text()
+        check(fails, out == "Here's my feedback on your response:\n\n"
+                            f'Re: "{SNIPPET_A}"\nshould return 2',
+              f"block mode broken: {out!r}")
     finally:
         app.stop()
         root.destroy()
@@ -302,6 +336,8 @@ def main():
             test_note_without_snippet,
             test_send,
             test_send_without_accessibility,
+            test_compact_is_one_line,
+            test_block_mode_still_available,
             test_remove_selected,
         ):
             before = len(fails)

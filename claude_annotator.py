@@ -260,6 +260,8 @@ class AnnotatorApp:
         self._front_timer = None
         self._front = None  # cached frontmost app, written by the watcher
         self.terminals = terminal_names()
+        # One-line output by default; {"compact": false} restores blocks.
+        self.compact = bool(load_config().get("compact", True))
         self._stop_evt = threading.Event()
         self._watcher = None
 
@@ -617,8 +619,21 @@ class AnnotatorApp:
     # ---------- output ----------
 
     def compile_text(self) -> str:
+        if self.compact:
+            # One line, so Claude Code's prompt shows it inline instead of
+            # collapsing it to "[Pasted text #1 +N lines]". Snippets get their
+            # whitespace flattened rather than dropped.
+            parts = [
+                f'Re: "{self._flatten(snip)}" → {note}' if snip else note
+                for snip, note in self.items
+            ]
+            return "Feedback on your response — " + "  |  ".join(parts)
         blocks = [f'Re: "{s}"\n{n}' if s else n for s, n in self.items]
         return "Here's my feedback on your response:\n\n" + "\n\n".join(blocks)
+
+    @staticmethod
+    def _flatten(text: str) -> str:
+        return " ".join((text or "").split())
 
     def _stage(self):
         self.commit_pending()
