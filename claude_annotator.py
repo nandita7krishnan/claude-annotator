@@ -260,8 +260,15 @@ class AnnotatorApp:
         self._front_timer = None
         self._front = None  # cached frontmost app, written by the watcher
         self.terminals = terminal_names()
+        cfg = load_config()
         # One-line output by default; {"compact": false} restores blocks.
-        self.compact = bool(load_config().get("compact", True))
+        self.compact = bool(cfg.get("compact", True))
+        # Stray one- or two-character copies (a prompt char, a stray
+        # copy-on-select) are not snippets and must never grab the keyboard.
+        self.min_chars = int(cfg.get("min_chars", 3))
+        # {"autofocus": false} keeps the pill passive -- it still captures,
+        # you just click or Cmd+Tab in when you're ready to type.
+        self.autofocus = bool(cfg.get("autofocus", True))
         self._stop_evt = threading.Event()
         self._watcher = None
 
@@ -549,17 +556,26 @@ class AnnotatorApp:
                     self._set_status(f"ignoring copies from {front}", DIM)
                 self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
                 return
+            if len(clip.strip()) < self.min_chars:
+                # Too small to be a real selection. Ignore it completely --
+                # don't capture, don't queue a half-typed note, don't focus.
+                self._set_status(f"ignored a {len(clip.strip())}-char copy", DIM)
+                self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
+                return
             self.target_app = front
             queued = self.commit_pending()
             self.snippet = clip.strip()
             self._refresh()
             self.hidden_by_user = False
             self.root.update_idletasks()  # draw first, then switch focus
-            self.show(focus=True)
-            self._set_status(
-                f"queued {len(self.items)} — next note?" if queued else "type your note",
-                GREEN if queued else DIM,
-            )
+            self.show(focus=self.autofocus)
+            if self.autofocus:
+                self._set_status(
+                    f"queued {len(self.items)} — next note?" if queued else "type your note",
+                    GREEN if queued else DIM,
+                )
+            else:
+                self._set_status("snippet ready — click to annotate", DIM)
         self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
 
     # ---------- queue ----------

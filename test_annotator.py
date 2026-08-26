@@ -297,6 +297,42 @@ def test_block_mode_still_available(fails):
         root.destroy()
 
 
+def test_trivial_copies_are_ignored(fails):
+    """A stray prompt char must not capture, queue, or steal the keyboard."""
+    root, app = build(FakeScript())
+    try:
+        copies(app, SNIPPET_A)
+        app.note_entry.insert(0, "half-typed note")
+        app.shown.clear()
+
+        for junk in (">", "x", "ab", "  \n "):
+            copies(app, junk)
+            check(fails, app.shown == [],
+                  f"{junk!r} grabbed focus: {app.shown!r}")
+            check(fails, app.snippet == SNIPPET_A,
+                  f"{junk!r} overwrote the snippet: {app.snippet!r}")
+            check(fails, app.items == [],
+                  f"{junk!r} queued the half-typed note: {app.items!r}")
+            check(fails, app.note_entry.get() == "half-typed note",
+                  f"{junk!r} cleared the note being typed")
+    finally:
+        app.stop()
+        root.destroy()
+
+
+def test_autofocus_can_be_disabled(fails):
+    root, app = build(FakeScript())
+    try:
+        app.autofocus = False
+        copies(app, SNIPPET_A)
+        check(fails, app.snippet == SNIPPET_A, "passive mode dropped the snippet")
+        check(fails, app.shown == [False],
+              f"passive mode still grabbed focus: {app.shown!r}")
+    finally:
+        app.stop()
+        root.destroy()
+
+
 def test_remove_selected(fails):
     root, app = build(FakeScript())
     try:
@@ -338,6 +374,8 @@ def main():
             test_send_without_accessibility,
             test_compact_is_one_line,
             test_block_mode_still_available,
+            test_trivial_copies_are_ignored,
+            test_autofocus_can_be_disabled,
             test_remove_selected,
         ):
             before = len(fails)

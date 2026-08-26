@@ -97,10 +97,17 @@ Both live in **System Settings > Privacy & Security**.
   { "terminals": ["My Terminal"] }
   ```
 
+- **What's big enough to be a snippet**: copies under 3 characters are
+  ignored outright — a stray prompt character or an accidental
+  copy-on-select shouldn't capture anything or take your keyboard. Tune
+  with `{"min_chars": 3}`.
 - **Which terminal to paste into**: whichever terminal you last copied
   from. Copy from it once and the pill learns it.
 - **When to be on screen**: only while that terminal (or the pill itself)
   is frontmost. `Esc` keeps it away until your next copy.
+- **Whether to take the keyboard at all**: set `{"autofocus": false}` and
+  the pill stays passive — it still catches snippets, you just click or
+  Cmd+Tab in when you actually want to write a note.
 
 ## Speed
 
