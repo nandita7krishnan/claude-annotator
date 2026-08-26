@@ -2,13 +2,14 @@
 """
 Smoke test for claude_annotator.
 
-Drives the whole annotate -> compile -> send flow against a real (hidden)
-Tk window. No dependencies beyond what the app itself needs:
+Drives the copy -> type -> Enter -> send loop against a real (hidden) Tk
+window. No dependencies beyond what the app itself needs:
 
     python3 test_annotator.py
 
-osascript is stubbed out, so this never actually switches apps or sends
-keystrokes. Your clipboard is saved on entry and restored on exit.
+osascript is stubbed, so this never switches apps or sends keystrokes,
+and show/hide are recorded rather than performed so no window appears.
+Your clipboard is saved on entry and restored on exit.
 """
 
 import sys
@@ -22,39 +23,54 @@ SNIPPET_B = "x = compute()"
 
 
 class FakeScript:
-    """Stands in for run_osascript. Records paste attempts."""
+    """Stands in for run_osascript. Records what the app tried to drive."""
 
     def __init__(self, front="Terminal", paste_error=None):
         self.front = front
         self.paste_error = paste_error
         self.pasted_to = []
+        self.activated = []
 
     def __call__(self, script, *args):
         if script is ca._FRONTMOST:
             return self.front, None
         if script is ca._SELF_NAME:
             return "Python", None
+        if script is ca._ACTIVATE_PID:
+            self.activated.append("self")
+            return "", None
+        if script is ca._ACTIVATE_NAME:
+            self.activated.append(args[0])
+            return "", None
         if script is ca._PASTE:
             if self.paste_error:
                 return None, self.paste_error
             self.pasted_to.append(args[0])
             return "", None
-        raise AssertionError(f"unexpected script: {script[:40]}")
+        raise AssertionError(f"unexpected script: {script[:40]!r}")
 
 
 def new_app(fake):
     ca.run_osascript = fake
+    ca.save_pos = lambda *a: None  # don't touch the real config file
     # Start from a clipboard value no test uses, so the app's initial
     # last_clip never accidentally matches the first snippet we copy.
     set_clipboard("<<test fixture>>")
     root = tk.Tk()
     root.withdraw()
-    return root, AnnotatorApp(root)
+    app = AnnotatorApp(root)
+    # Record visibility decisions instead of actually showing a window.
+    app.shown, app.hidden = [], []
+    app.show = lambda focus=False: app.shown.append(focus)
+    app.hide = lambda by_user=False: app.hidden.append(by_user)
+    return root, app
 
 
-def copies(app, text):
-    """Simulate a Cmd+C elsewhere, then one poll tick."""
+def copies(app, text, front="Terminal"):
+    """Simulate a Cmd+C in `front`, then one poll tick."""
+    app._fake.front = front
     set_clipboard(text)
+    app.root.update()
     app.poll_clipboard()
 
 
@@ -63,65 +79,112 @@ def check(fails, cond, msg):
         fails.append(msg)
 
 
-def test_auto_queue(fails):
-    fake = FakeScript()
+def build(fake):
     root, app = new_app(fake)
+    app._fake = fake
+    return root, app
+
+
+def test_auto_queue(fails):
+    root, app = build(FakeScript())
     try:
-        # Copy, type a note, then copy again -- the note queues itself.
         copies(app, SNIPPET_A)
-        check(fails, app.snippet_box.get("1.0", "end").strip() == SNIPPET_A,
-              "auto-fill did not load first snippet")
+        check(fails, app.snippet == SNIPPET_A, f"snippet not loaded: {app.snippet!r}")
         app.note_entry.insert(0, "should return 2")
         copies(app, SNIPPET_B)
-
-        check(fails, len(app.items) == 1, f"auto-queue: {app.items!r}")
-        check(fails, app.items[0] == (SNIPPET_A, "should return 2"),
-              f"auto-queue paired wrongly: {app.items!r}")
+        check(fails, app.items == [(SNIPPET_A, "should return 2")],
+              f"auto-queue: {app.items!r}")
         check(fails, app.note_entry.get() == "", "note field not cleared")
-        check(fails, app.snippet_box.get("1.0", "end").strip() == SNIPPET_B,
-              "second snippet not loaded")
-
-        # The app it saw you copy from becomes the paste target.
+        check(fails, app.snippet == SNIPPET_B, f"second snippet: {app.snippet!r}")
         check(fails, app.target_app == "Terminal", f"target_app: {app.target_app!r}")
     finally:
+        app.stop()
         root.destroy()
 
 
-def test_no_note_just_replaces(fails):
-    root, app = new_app(FakeScript())
+def test_enter_returns_focus(fails):
+    """Enter must queue AND hand focus back, so you never touch the mouse."""
+    fake = FakeScript()
+    root, app = build(fake)
     try:
         copies(app, SNIPPET_A)
-        copies(app, SNIPPET_B)  # no note typed in between
-        check(fails, app.items == [], f"queued with no note: {app.items!r}")
-        check(fails, app.snippet_box.get("1.0", "end").strip() == SNIPPET_B,
-              "snippet not replaced")
+        app.note_entry.insert(0, "too verbose")
+        app.queue_and_return()
+        check(fails, app.items == [(SNIPPET_A, "too verbose")], f"queue: {app.items!r}")
+        check(fails, "Terminal" in fake.activated,
+              f"focus not returned to terminal: {fake.activated!r}")
     finally:
+        app.stop()
+        root.destroy()
+
+
+def test_focus_grab_only_from_terminal(fails):
+    """Copying elsewhere must not yank focus out of unrelated work."""
+    fake = FakeScript()
+    root, app = build(fake)
+    try:
+        copies(app, SNIPPET_A, front="Terminal")
+        check(fails, app.shown and app.shown[-1] is True,
+              f"should have grabbed focus: {app.shown!r}")
+
+        app.shown.clear()
+        copies(app, "unrelated copy", front="Python")  # our own app == not a terminal
+        check(fails, app.shown == [], f"grabbed focus from non-terminal: {app.shown!r}")
+        check(fails, app.target_app == "Terminal",
+              f"target drifted to a non-terminal: {app.target_app!r}")
+    finally:
+        app.stop()
+        root.destroy()
+
+
+def test_hides_when_terminal_not_front(fails):
+    fake = FakeScript()
+    root, app = build(fake)
+    try:
+        copies(app, SNIPPET_A, front="Terminal")
+        app.shown.clear(); app.hidden.clear()
+
+        fake.front = "Safari"
+        app.poll_frontmost()
+        check(fails, app.hidden, "did not hide when terminal lost focus")
+
+        app.shown.clear(); app.hidden.clear()
+        fake.front = "Terminal"
+        app.poll_frontmost()
+        check(fails, app.shown, "did not come back when terminal returned")
+
+        # Esc means stay gone until the next copy.
+        app.hidden_by_user = True
+        app.shown.clear()
+        app.poll_frontmost()
+        check(fails, app.shown == [], "reappeared after being dismissed with Esc")
+    finally:
+        app.stop()
         root.destroy()
 
 
 def test_note_without_snippet(fails):
-    """A typed note with no snippet must not get glued onto the next snippet."""
-    root, app = new_app(FakeScript())
+    root, app = build(FakeScript())
     try:
         app.note_entry.insert(0, "overall: too verbose")
         copies(app, SNIPPET_A)
         check(fails, app.items == [(None, "overall: too verbose")],
               f"stray note mishandled: {app.items!r}")
     finally:
+        app.stop()
         root.destroy()
 
 
 def test_send(fails):
     fake = FakeScript()
-    root, app = new_app(fake)
+    root, app = build(fake)
     try:
         copies(app, SNIPPET_A)
         app.note_entry.insert(0, "should return 2")
         copies(app, SNIPPET_B)
         app.note_entry.insert(0, "name this")
 
-        # Sending commits the note still being typed -- no trailing click.
-        app.send_to_terminal()
+        app.send_to_terminal()  # commits the note still being typed
 
         expected = (
             "Here's my feedback on your response:\n\n"
@@ -129,16 +192,16 @@ def test_send(fails):
             f'Re: "{SNIPPET_B}"\nname this'
         )
         check(fails, get_clipboard() == expected,
-              f"compiled text:\n{get_clipboard()!r}\nexpected:\n{expected!r}")
+              f"compiled:\n{get_clipboard()!r}\nexpected:\n{expected!r}")
         check(fails, fake.pasted_to == ["Terminal"], f"paste target: {fake.pasted_to!r}")
-        check(fails, app.items == [], "queue not cleared after successful send")
-        check(fails, app.listbox.size() == 0, "listbox not cleared after send")
+        check(fails, app.items == [], "queue not cleared after send")
+        check(fails, app.hidden, "did not hide itself after sending")
 
-        # Regression: the next poll must not read our own output back in.
+        app.root.update()
         app.poll_clipboard()
-        echoed = app.snippet_box.get("1.0", "end").strip()
-        check(fails, not echoed, f"clipboard echo: {echoed[:60]!r}")
+        check(fails, not app.snippet, f"clipboard echo: {app.snippet[:40]!r}")
     finally:
+        app.stop()
         root.destroy()
 
 
@@ -147,22 +210,23 @@ def test_send_without_accessibility(fails):
         paste_error="System Events got an error: osascript is not allowed "
         "to send keystrokes. (1002)"
     )
-    root, app = new_app(fake)
+    root, app = build(fake)
     try:
         copies(app, SNIPPET_A)
         app.note_entry.insert(0, "note")
         app.send_to_terminal()
-        check(fails, "Accessibility" in app.status.cget("text"),
-              f"unhelpful status: {app.status.cget('text')!r}")
+        check(fails, "Accessibility" in app.status_text,
+              f"unhelpful status: {app.status_text!r}")
         check(fails, len(app.items) == 1, "queue lost after a failed paste")
         check(fails, get_clipboard().startswith("Here's my feedback"),
               "text not on clipboard as fallback")
     finally:
+        app.stop()
         root.destroy()
 
 
 def test_remove_selected(fails):
-    root, app = new_app(FakeScript())
+    root, app = build(FakeScript())
     try:
         copies(app, SNIPPET_A)
         app.note_entry.insert(0, "first")
@@ -173,17 +237,20 @@ def test_remove_selected(fails):
         app.remove_selected()
         check(fails, app.items == [(None, "second")], f"remove_selected: {app.items!r}")
     finally:
+        app.stop()
         root.destroy()
 
 
 def main():
     saved = get_clipboard()
-    real = ca.run_osascript
+    real_script, real_save = ca.run_osascript, ca.save_pos
     fails = []
     try:
         for test in (
             test_auto_queue,
-            test_no_note_just_replaces,
+            test_enter_returns_focus,
+            test_focus_grab_only_from_terminal,
+            test_hides_when_terminal_not_front,
             test_note_without_snippet,
             test_send,
             test_send_without_accessibility,
@@ -193,7 +260,7 @@ def main():
             test(fails)
             print(f"  {'FAIL' if len(fails) > before else 'ok  '}  {test.__name__}")
     finally:
-        ca.run_osascript = real
+        ca.run_osascript, ca.save_pos = real_script, real_save
         set_clipboard(saved)
 
     if fails:

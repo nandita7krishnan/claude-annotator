@@ -1,42 +1,68 @@
 #!/usr/bin/env python3
 """
-Claude Annotator — a small floating scratchpad for macOS.
+Claude Annotator — a small floating pill for annotating Claude's replies.
 
-Workflow:
-  1. Run this next to your terminal (claude / Claude Code session running there).
-  2. Select some text in the terminal and Cmd+C it as you normally would.
-     This window auto-detects the new clipboard content and drops it into
-     the "snippet" box for you — no manual paste needed.
-  3. Type your note about that snippet.
-  4. Copy the next snippet. Your previous note is queued automatically —
-     no Enter, no button. Repeat for as many spots as you like.
-  5. Click "Send to <app>". It compiles everything, copies it, switches
-     back to the app you copied from, and pastes it there.
+The loop, hands on keyboard the whole time:
 
-It pastes but deliberately does NOT press Enter, so you always get to
-read the message and send it yourself.
+    select text, Cmd+C  ->  pill appears, focused
+    type your note      ->  Enter  (queues it, throws you back to the terminal)
+    select, Cmd+C       ->  type   ->  Enter  ->  ...
+    Cmd+Enter           ->  compiles everything and pastes it into your terminal
 
-Requires: Python 3 with tkinter (ships with the python.org installer;
-Homebrew users may need `brew install python-tk`).
-Uses macOS's built-in pbcopy/pbpaste, no extra pip packages needed.
+The pill hides itself whenever your terminal isn't frontmost, so it's only
+on screen when you're actually working with Claude.
 
-The auto-paste additionally needs Accessibility permission for whichever
-app runs this script (System Settings > Privacy & Security > Accessibility).
-Without it everything still works — the text lands on your clipboard and
-you paste it yourself.
+Keys
+    Enter        queue this note and return to your terminal
+    Cmd+Enter    send everything
+    Esc          hide (comes back next time you copy)
+    click ●N     show/hide the queue
+    click x      quit
+
+Requires Python 3 with tkinter. No pip packages — it uses tkinter's own
+clipboard and macOS's osascript.
+
+Permissions (System Settings > Privacy & Security):
+    Automation      needed. Lets it see which app is frontmost and switch
+                    back to your terminal. macOS prompts for this.
+    Accessibility   optional. Only for the final auto-paste. Without it,
+                    Cmd+Enter still compiles and copies, and you paste.
 """
 
+import json
 import os
 import subprocess
 import tkinter as tk
-from tkinter import scrolledtext
 
-POLL_MS = 500
+HERE = os.path.expanduser("~/.claude-annotator.json")
+
+POLL_CLIP_MS = 350
+POLL_FRONT_MS = 900
+
+W = 380
+H_SMALL = 118
+H_BIG = 330
+RADIUS = 16
+
+BG = "#1f1f24"
+FIELD = "#2b2b32"
+FG = "#ececf1"
+DIM = "#8b8b96"
+GREEN = "#5ec27a"
+RED = "#e5806b"
+BLUE = "#7aa7e8"
 
 _FRONTMOST = (
     'tell application "System Events" to get name of '
     "first application process whose frontmost is true"
 )
+
+_ACTIVATE_PID = """on run argv
+    tell application "System Events"
+        set frontmost of (first application process whose unix id is ¬
+            (item 1 of argv as integer)) to true
+    end tell
+end run"""
 
 _SELF_NAME = """on run argv
     tell application "System Events"
@@ -44,10 +70,15 @@ _SELF_NAME = """on run argv
     end tell
 end run"""
 
-_PASTE = """on run argv
-    set appName to item 1 of argv
+_ACTIVATE_NAME = """on run argv
     tell application "System Events"
-        set frontmost of (first application process whose name is appName) to true
+        set frontmost of (first application process whose name is (item 1 of argv)) to true
+    end tell
+end run"""
+
+_PASTE = """on run argv
+    tell application "System Events"
+        set frontmost of (first application process whose name is (item 1 of argv)) to true
         delay 0.25
         keystroke "v" using command down
     end tell
@@ -93,227 +124,395 @@ def needs_accessibility(err: str) -> bool:
     )
 
 
+def load_pos():
+    try:
+        with open(HERE) as fh:
+            cfg = json.load(fh)
+        return int(cfg["x"]), int(cfg["y"])
+    except Exception:
+        return None
+
+
+def save_pos(x, y):
+    try:
+        with open(HERE, "w") as fh:
+            json.dump({"x": x, "y": y}, fh)
+    except Exception:
+        pass
+
+
 class AnnotatorApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("Claude Annotator")
+        self.items = []  # (snippet_or_None, note)
+        self.snippet = ""  # what you last copied
+        self.target_app = None  # app you copied from == where we paste back
+        self.status_text = "Copy something to start."
+        self._self_app = None
+        self._self_pid = str(os.getpid())
+        self.expanded = False
+        self.hidden_by_user = False
+        self.visible = True
+        self._clip_timer = None
+        self._front_timer = None
+
+        root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.geometry("440x580")
+        try:
+            root.attributes("-transparent", True)
+        except tk.TclError:
+            pass
+        root.configure(bg="systemTransparent")
 
-        self.last_clip = get_clipboard()
-        self.items: list = []  # (snippet_or_None, note)
-        self.target_app = None  # app we last saw you copy from
-        self._self_app = None  # our own process name, resolved lazily
+        pos = load_pos()
+        if pos is None:
+            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+            pos = (sw - W - 40, sh - H_SMALL - 120)
+        root.geometry(f"{W}x{H_SMALL}+{pos[0]}+{pos[1]}")
 
-        pad = {"padx": 10, "pady": 4}
+        self.canvas = tk.Canvas(
+            root, width=W, height=H_BIG, highlightthickness=0, bg="systemTransparent"
+        )
+        self.canvas.pack(fill="both", expand=True)
 
-        tk.Label(
+        self.note_entry = tk.Entry(
             root,
-            text="Selected snippet (auto-fills when you Cmd+C in your terminal):",
-            anchor="w",
-        ).pack(fill="x", **pad)
-
-        self.snippet_box = scrolledtext.ScrolledText(root, height=4, wrap="word")
-        self.snippet_box.pack(fill="x", **pad)
-
-        tk.Label(
-            root,
-            text="Your note (just copy the next snippet — this queues itself):",
-            anchor="w",
-        ).pack(fill="x", **pad)
-
-        self.note_entry = tk.Entry(root)
-        self.note_entry.pack(fill="x", **pad)
-        self.note_entry.bind("<Return>", lambda e: self.add_item())
-        self.note_entry.focus_set()
-
-        btn_row = tk.Frame(root)
-        btn_row.pack(fill="x", **pad)
-        tk.Button(btn_row, text="Queue it now", command=self.add_item).pack(side="left")
-        tk.Button(
-            btn_row, text="Note only (no snippet)", command=self.add_note_only
-        ).pack(side="left", padx=6)
-
-        tk.Label(root, text="Queued annotations:", anchor="w").pack(fill="x", **pad)
-
-        list_frame = tk.Frame(root)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=4)
-        scrollbar = tk.Scrollbar(list_frame)
-        scrollbar.pack(side="right", fill="y")
+            bg=FIELD,
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+            font=("SF Pro Text", 13),
+            highlightthickness=0,
+        )
         self.listbox = tk.Listbox(
-            list_frame, height=12, yscrollcommand=scrollbar.set, selectmode="extended"
-        )
-        self.listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=self.listbox.yview)
-
-        edit_row = tk.Frame(root)
-        edit_row.pack(fill="x", padx=10, pady=(4, 2))
-        tk.Button(edit_row, text="Remove selected", command=self.remove_selected).pack(
-            side="left"
-        )
-        tk.Button(edit_row, text="Clear all", command=self.clear_all).pack(
-            side="left", padx=6
-        )
-        tk.Button(edit_row, text="Copy only", command=self.copy_all).pack(side="right")
-
-        self.send_btn = tk.Button(
             root,
-            text="Send to terminal",
-            bg="#2e7d32",
-            fg="white",
-            height=2,
-            command=self.send_to_terminal,
+            bg=FIELD,
+            fg=DIM,
+            relief="flat",
+            font=("SF Pro Text", 11),
+            highlightthickness=0,
+            selectmode="extended",
+            activestyle="none",
         )
-        self.send_btn.pack(fill="x", padx=10, pady=(2, 4))
 
-        self.status = tk.Label(root, text="Ready.", fg="#444", anchor="w")
-        self.status.pack(fill="x", padx=10, pady=(0, 8))
-
+        self._build()
+        self._bind()
+        self.last_clip = self._read_clipboard()
         self.poll_clipboard()
+        self.poll_frontmost()
 
-    # ---------- clipboard watching ----------
+    # ---------- chrome ----------
 
-    def poll_clipboard(self):
-        clip = get_clipboard()
-        if clip != self.last_clip and clip.strip():
-            self.last_clip = clip
-            self.remember_front_app()
-            queued = self.commit_pending()
-            self.snippet_box.delete("1.0", "end")
-            self.snippet_box.insert("1.0", clip.strip())
-            self.note_entry.focus_set()
-            if queued:
-                self._set_status(
-                    f"Queued ({len(self.items)}). Note for this one?", "#2e7d32"
-                )
-            else:
-                self._set_status("Snippet ready — type your note.", "#444")
-        self.root.after(POLL_MS, self.poll_clipboard)
+    def _round_rect(self, x1, y1, x2, y2, r, **kw):
+        pts = [
+            x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+            x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+            x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
+        ]
+        return self.canvas.create_polygon(pts, smooth=True, **kw)
+
+    def _build(self):
+        c = self.canvas
+        c.delete("all")
+        h = H_BIG if self.expanded else H_SMALL
+        self.root.geometry(f"{W}x{h}")
+        c.config(height=h)
+
+        self._round_rect(1, 1, W - 1, h - 1, RADIUS, fill=BG, outline="#3a3a44")
+
+        c.create_text(
+            16, 20, anchor="w", fill=DIM, font=("SF Pro Text", 11, "italic"),
+            text=self._preview(), tags="preview",
+        )
+        c.create_text(
+            W - 16, 18, anchor="e", fill=DIM, font=("SF Pro Text", 13), text="✕",
+            tags="close",
+        )
+
+        c.create_window(16, 40, anchor="nw", window=self.note_entry, width=W - 32, height=28)
+
+        badge_y = 88 if not self.expanded else H_BIG - 26
+        self.badge_id = c.create_text(
+            16, badge_y, anchor="w", fill=GREEN if self.items else DIM,
+            font=("SF Pro Text", 11), text=self._badge(), tags="badge",
+        )
+        c.create_text(
+            W - 16, badge_y, anchor="e", fill=GREEN, font=("SF Pro Text", 11, "bold"),
+            text="Send ⌘⏎", tags="send",
+        )
+        self.status_id = c.create_text(
+            W / 2, badge_y, anchor="center", fill=DIM, font=("SF Pro Text", 10),
+            text=self.status_text,
+        )
+
+        if self.expanded:
+            c.create_window(16, 78, anchor="nw", window=self.listbox,
+                            width=W - 32, height=H_BIG - 118)
+        else:
+            self.listbox.place_forget()
+
+    def _preview(self):
+        if not self.snippet:
+            return "no snippet — copy something in your terminal"
+        return f'"{self._truncate(self.snippet, 46)}"'
+
+    def _badge(self):
+        n = len(self.items)
+        if not n:
+            return "nothing queued"
+        return f"● {n} queued  ▾" if not self.expanded else f"● {n} queued  ▴"
+
+    def _refresh(self):
+        self.canvas.itemconfig("preview", text=self._preview())
+        self.canvas.itemconfig(self.badge_id, text=self._badge(),
+                               fill=GREEN if self.items else DIM)
+        self.canvas.itemconfig(self.status_id, text=self.status_text)
+
+    def _set_status(self, text, color=DIM):
+        self.status_text = text
+        try:
+            self.canvas.itemconfig(self.status_id, text=text, fill=color)
+        except tk.TclError:
+            pass
+
+    # ---------- input ----------
+
+    def _bind(self):
+        c = self.canvas
+        c.tag_bind("send", "<Button-1>", lambda e: self.send_to_terminal())
+        c.tag_bind("badge", "<Button-1>", lambda e: self.toggle_expand())
+        c.tag_bind("close", "<Button-1>", lambda e: self.quit())
+        for tag in ("send", "badge", "close"):
+            c.tag_bind(tag, "<Enter>", lambda e: c.config(cursor="pointinghand"))
+            c.tag_bind(tag, "<Leave>", lambda e: c.config(cursor=""))
+
+        c.bind("<Button-1>", self._drag_start)
+        c.bind("<B1-Motion>", self._drag_move)
+        c.bind("<ButtonRelease-1>", self._drag_end)
+
+        self.note_entry.bind("<Return>", lambda e: self.queue_and_return())
+        self.note_entry.bind("<Command-Return>", lambda e: self.send_to_terminal())
+        self.root.bind("<Command-Return>", lambda e: self.send_to_terminal())
+        self.root.bind("<Escape>", lambda e: self.hide(by_user=True))
+
+    def _drag_start(self, event):
+        self._drag = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
+
+    def _drag_move(self, event):
+        if not getattr(self, "_drag", None):
+            return
+        self.root.geometry(f"+{event.x_root - self._drag[0]}+{event.y_root - self._drag[1]}")
+
+    def _drag_end(self, _event):
+        self._drag = None
+        save_pos(self.root.winfo_x(), self.root.winfo_y())
+
+    # ---------- visibility ----------
+
+    def show(self, focus=False):
+        if not self.visible:
+            self.root.deiconify()
+            self.root.lift()
+            self.visible = True
+        if focus:
+            self.activate_self()
+            self.note_entry.focus_force()
+
+    def hide(self, by_user=False):
+        if self.visible:
+            self.root.withdraw()
+            self.visible = False
+        if by_user:
+            self.hidden_by_user = True
+
+    def _reschedule(self, attr, ms, fn):
+        """Queue the next tick, replacing any tick already pending."""
+        pending = getattr(self, attr)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+        setattr(self, attr, self.root.after(ms, fn))
+
+    def stop(self):
+        """Cancel pending timers so nothing fires after the window is gone."""
+        for timer in (self._clip_timer, self._front_timer):
+            if timer is not None:
+                try:
+                    self.root.after_cancel(timer)
+                except tk.TclError:
+                    pass
+        self._clip_timer = self._front_timer = None
+
+    def quit(self):
+        save_pos(self.root.winfo_x(), self.root.winfo_y())
+        self.stop()
+        self.root.destroy()
+
+    def toggle_expand(self):
+        self.expanded = not self.expanded
+        self._build()
+
+    def activate_self(self):
+        run_osascript(_ACTIVATE_PID, self._self_pid)
+
+    def activate_target(self):
+        if self.target_app:
+            run_osascript(_ACTIVATE_NAME, self.target_app)
 
     def self_app_name(self):
         if self._self_app is None:
-            out, _ = run_osascript(_SELF_NAME, str(os.getpid()))
+            out, _ = run_osascript(_SELF_NAME, self._self_pid)
             self._self_app = out or ""
         return self._self_app
 
-    def remember_front_app(self):
-        """Whatever was frontmost when you hit Cmd+C is the app to paste back into."""
-        name, err = run_osascript(_FRONTMOST)
-        if err or not name or name == self.self_app_name():
-            return
-        if name != self.target_app:
-            self.target_app = name
-            self.send_btn.config(text=f"Send to {name}")
+    def poll_frontmost(self):
+        """Only be on screen while the terminal you copy from is in front."""
+        front, err = run_osascript(_FRONTMOST)
+        if not err and front:
+            if self.target_app is None:
+                pass  # nothing learned yet — stay put
+            elif front in (self.target_app, self.self_app_name()):
+                if not self.hidden_by_user:
+                    self.show()
+            else:
+                self.hide()
+        self._reschedule("_front_timer", POLL_FRONT_MS, self.poll_frontmost)
 
-    # ---------- queueing ----------
+    # ---------- clipboard ----------
+
+    def _read_clipboard(self):
+        try:
+            return self.root.clipboard_get()
+        except tk.TclError:
+            return get_clipboard()
+
+    def poll_clipboard(self):
+        clip = self._read_clipboard()
+        if clip != self.last_clip and clip.strip():
+            self.last_clip = clip
+            front, _ = run_osascript(_FRONTMOST)
+            from_terminal = bool(front) and front not in ("", self.self_app_name())
+            if from_terminal:
+                self.target_app = front
+            queued = self.commit_pending()
+            self.snippet = clip.strip()
+            self._refresh()
+            if from_terminal:
+                self.hidden_by_user = False
+                self.show(focus=True)
+            self._set_status(
+                f"queued {len(self.items)} — next note?" if queued else "type your note",
+                GREEN if queued else DIM,
+            )
+        self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
+
+    # ---------- queue ----------
 
     def _queue(self, snippet, note):
         self.items.append((snippet, note))
-        label = f'Re: "{self._truncate(snippet)}" -> {note}' if snippet else note
-        self.listbox.insert("end", label)
+        self.listbox.insert("end", f'{self._truncate(snippet, 28)} → {note}'
+                            if snippet else f"— {note}")
         self.listbox.see("end")
 
     def commit_pending(self) -> bool:
-        """Queue whatever is typed right now. Returns True if anything was queued."""
         note = self.note_entry.get().strip()
         if not note:
             return False
-        snippet = self.snippet_box.get("1.0", "end").strip()
-        self._queue(snippet or None, note)
+        self._queue(self.snippet or None, note)
         self.note_entry.delete(0, "end")
-        self.snippet_box.delete("1.0", "end")
+        self.snippet = ""
+        self._refresh()
         return True
+
+    def queue_and_return(self):
+        """Enter: bank this note and hand focus straight back to the terminal."""
+        if not self.commit_pending():
+            self._set_status("type a note first", RED)
+            return
+        self._set_status(f"queued {len(self.items)} — back to you", GREEN)
+        self._refresh()
+        self.activate_target()
 
     def add_item(self):
         if not self.commit_pending():
-            self._set_status("Type a note first.", "red")
+            self._set_status("type a note first", RED)
             return
-        self._set_status(f"Added. {len(self.items)} queued.", "#2e7d32")
+        self._set_status(f"queued {len(self.items)}", GREEN)
 
     def add_note_only(self):
         note = self.note_entry.get().strip()
         if not note:
-            self._set_status("Type a note first.", "red")
+            self._set_status("type a note first", RED)
             return
         self._queue(None, note)
         self.note_entry.delete(0, "end")
-        self._set_status(f"Added. {len(self.items)} queued.", "#2e7d32")
+        self._refresh()
+        self._set_status(f"queued {len(self.items)}", GREEN)
 
     def remove_selected(self):
         for idx in reversed(list(self.listbox.curselection())):
             self.listbox.delete(idx)
             del self.items[idx]
-        self._set_status(f"{len(self.items)} queued.", "#444")
+        self._refresh()
 
     def clear_all(self):
         self.items.clear()
         self.listbox.delete(0, "end")
-        self._set_status("Cleared.", "#444")
+        self._refresh()
 
     # ---------- output ----------
 
     def compile_text(self) -> str:
-        blocks = []
-        for snippet, note in self.items:
-            blocks.append(f'Re: "{snippet}"\n{note}' if snippet else note)
+        blocks = [f'Re: "{s}"\n{n}' if s else n for s, n in self.items]
         return "Here's my feedback on your response:\n\n" + "\n\n".join(blocks)
 
     def _stage(self):
-        """Queue anything pending and put the compiled text on the clipboard."""
         self.commit_pending()
         if not self.items:
             return None
         text = self.compile_text()
         set_clipboard(text)
-        # Don't let the next poll mistake our own output for a new snippet.
-        self.last_clip = text
+        self.last_clip = text  # don't read our own output back in
         return text
 
     def copy_all(self):
         if self._stage() is None:
-            self._set_status("Nothing to copy yet.", "red")
+            self._set_status("nothing to copy", RED)
             return
-        self._set_status(
-            "Copied! Cmd+Tab to your terminal, Cmd+V, then Enter.", "#1565c0"
-        )
+        self._set_status("copied — paste it yourself", BLUE)
 
     def send_to_terminal(self):
         if self._stage() is None:
-            self._set_status("Nothing to send yet.", "red")
+            self._set_status("nothing to send", RED)
             return
         if not self.target_app:
-            self._set_status(
-                "Copied — but I haven't seen you copy from anywhere yet.", "#1565c0"
-            )
+            self._set_status("copied — no terminal seen yet", BLUE)
             return
 
         _, err = run_osascript(_PASTE, self.target_app)
         if err:
+            self.activate_target()
             if needs_accessibility(err):
-                self._set_status(
-                    "Copied. Allow Accessibility for auto-paste, or paste it yourself.",
-                    "red",
-                )
+                self._set_status("copied — allow Accessibility to auto-paste", RED)
             else:
-                self._set_status(f"Copied, but paste failed: {err[:44]}", "red")
+                self._set_status(f"copied — paste failed: {err[:24]}", RED)
             return
 
         count = len(self.items)
         self.clear_all()
-        self._set_status(
-            f"Pasted {count} into {self.target_app}. Press Enter there to send.",
-            "#1565c0",
-        )
+        if self.expanded:
+            self.toggle_expand()
+        self._set_status(f"sent {count} — press Enter there", BLUE)
+        self.hide()
 
     # ---------- helpers ----------
 
     @staticmethod
-    def _truncate(text: str, limit: int = 60) -> str:
-        flat = " ".join(text.split())
+    def _truncate(text, limit=60):
+        flat = " ".join((text or "").split())
         return flat if len(flat) <= limit else flat[: limit - 1] + "…"
-
-    def _set_status(self, text: str, color: str):
-        self.status.config(text=text, fg=color)
 
 
 if __name__ == "__main__":
