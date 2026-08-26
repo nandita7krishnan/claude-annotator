@@ -31,6 +31,22 @@ Hands stay on the keyboard the whole time.
 
 It never presses Enter for you, so nothing is sent until you've seen it.
 
+## What gets pasted
+
+A single line:
+
+```
+Feedback on your response — Re: "snippet one" → note one  |  Re: "snippet two" → note two
+```
+
+One line on purpose. Claude Code collapses any multi-line paste into
+`[Pasted text #1 +N lines]`, so a block format means you never see what
+you're about to send. Snippets have their whitespace flattened, not
+dropped, so multi-line code still reads sensibly.
+
+Prefer the old block format? Put `{"compact": false}` in
+`~/.claude-annotator.json`.
+
 ## Keys
 
 | | |
