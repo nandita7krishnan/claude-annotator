@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Annotator — a small floating pill for annotating Claude's replies.
+Clanno — a small floating pill for annotating Claude's replies.
 
 The loop, hands on keyboard the whole time:
 
@@ -36,12 +36,13 @@ import subprocess
 import threading
 import tkinter as tk
 
-HERE = os.path.expanduser("~/.claude-annotator.json")
-PIDFILE = os.path.expanduser("~/.claude-annotator.pid")
+HERE = os.path.expanduser("~/.clanno.json")
+LEGACY = os.path.expanduser("~/.claude-annotator.json")
+PIDFILE = os.path.expanduser("~/.clanno.pid")
 
 # Only copies made in one of these count as annotation material. Anything
 # else -- an editor, a browser, chat -- is ignored completely. Add your own
-# with {"terminals": ["My Terminal"]} in ~/.claude-annotator.json.
+# with {"terminals": ["My Terminal"]} in ~/.clanno.json.
 DEFAULT_TERMINALS = [
     "Terminal", "iTerm2", "iTerm", "Warp", "Alacritty", "kitty", "WezTerm",
     "Ghostty", "Hyper", "Tabby", "rio", "Contour",
@@ -52,7 +53,7 @@ POLL_CLIP_MS = 100
 # Frontmost lookup shells out, so it runs on a background thread and the
 # UI only ever reads the cached answer.
 POLL_FRONT_MS = 400
-SCRIPT_CACHE = os.path.expanduser("~/.claude-annotator-scripts")
+SCRIPT_CACHE = os.path.expanduser("~/.clanno-scripts")
 
 W = 380
 H_SMALL = 118
@@ -208,8 +209,9 @@ def needs_accessibility(err: str) -> bool:
 
 
 def load_config() -> dict:
+    path = HERE if os.path.exists(HERE) else LEGACY
     try:
-        with open(HERE) as fh:
+        with open(path) as fh:
             cfg = json.load(fh)
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
@@ -734,7 +736,7 @@ def release_pidfile():
 if __name__ == "__main__":
     running = already_running()
     if running:
-        print(f"Claude Annotator is already running (pid {running}).")
+        print(f"Clanno is already running (pid {running}).")
         print(f"Quit it with the ✕, or: kill {running}")
         raise SystemExit(0)
     claim_pidfile()

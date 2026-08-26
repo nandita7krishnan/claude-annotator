@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Smoke test for claude_annotator.
+Smoke test for clanno.
 
 Drives the copy -> type -> Enter -> send loop against a real (hidden) Tk
 window. No dependencies beyond what the app itself needs:
 
-    python3 test_annotator.py
+    python3 test_clanno.py
 
 osascript is stubbed, so this never switches apps or sends keystrokes,
 and show/hide are recorded rather than performed so no window appears.
@@ -15,8 +15,8 @@ Your clipboard is saved on entry and restored on exit.
 import sys
 import tkinter as tk
 
-import claude_annotator as ca
-from claude_annotator import AnnotatorApp, get_clipboard, set_clipboard
+import clanno as ca
+from clanno import AnnotatorApp, get_clipboard, set_clipboard
 
 SNIPPET_A = "def foo():\n    return 1"
 SNIPPET_B = "x = compute()"
@@ -354,7 +354,7 @@ def main():
     import tempfile
 
     saved = get_clipboard()
-    # Never read or write the real ~/.claude-annotator.json during tests.
+    # Never read or write the real ~/.clanno.json during tests.
     real_here = ca.HERE
     fd, ca.HERE = tempfile.mkstemp(suffix=".json")
     _os.close(fd)

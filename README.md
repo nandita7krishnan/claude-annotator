@@ -1,4 +1,4 @@
-# Claude Annotator
+# Clanno
 
 A small floating pill that sits next to your terminal while you're working
 with Claude Code. Highlight something in Claude's reply, say what you think,
@@ -45,7 +45,7 @@ you're about to send. Snippets have their whitespace flattened, not
 dropped, so multi-line code still reads sensibly.
 
 Prefer the old block format? Put `{"compact": false}` in
-`~/.claude-annotator.json`.
+`~/.clanno.json`.
 
 ## Keys
 
@@ -68,8 +68,27 @@ Requires Python 3 with tkinter.
 
 No pip packages — it uses tkinter's own clipboard and macOS's `osascript`.
 
+**Install it properly** (builds `~/Applications/Clanno.app` and starts it
+at login):
+
 ```bash
-python3 claude_annotator.py
+./install.sh
+```
+
+It restarts on a crash but respects quitting: hit the pill's `✕` and it
+stays gone until next login, or bring it back with
+`launchctl kickstart gui/$UID/com.clanno.pill`.
+
+To remove it — app and login agent, config untouched:
+
+```bash
+./install.sh --uninstall
+```
+
+Or just run it in the foreground while hacking on it:
+
+```bash
+python3 clanno.py
 ```
 
 ### Permissions
@@ -93,7 +112,7 @@ Both live in **System Settings > Privacy & Security**.
   Contour. Using something else? Add it:
 
   ```json
-  // ~/.claude-annotator.json
+  // ~/.clanno.json
   { "terminals": ["My Terminal"] }
   ```
 
@@ -121,7 +140,7 @@ The copy -> focus path is kept off the critical path deliberately:
 | back to terminal | 161ms (System Events) | ~74ms (`open -a`) |
 | **copy -> ready to type** | **~580ms** | **~120ms** |
 
-AppleScript is compiled once into `~/.claude-annotator-scripts` rather than
+AppleScript is compiled once into `~/.clanno-scripts` rather than
 recompiled on every call, and nothing that shells out runs on the UI thread.
 
 ## Notes / limitations
@@ -138,7 +157,7 @@ recompiled on every call, and nothing that shells out runs on the UI thread.
 ## Tests
 
 ```bash
-python3 test_annotator.py
+python3 test_clanno.py
 ```
 
 Drives the whole loop against a hidden window. `osascript` is stubbed, so
