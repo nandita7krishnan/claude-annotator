@@ -219,6 +219,10 @@ Tests stub out AppleScript and app-switching, so they never steal focus or
 switch apps, and they save and restore your clipboard. Contributor notes and
 architecture are in [AGENTS.md](AGENTS.md).
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Speed
 
 The copy → focus path is deliberately kept off the critical path:
