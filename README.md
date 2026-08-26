@@ -77,6 +77,21 @@ Both live in **System Settings > Privacy & Security**.
 - **When to be on screen**: only while that terminal (or the pill itself)
   is frontmost. `Esc` keeps it away until your next copy.
 
+## Speed
+
+The copy -> focus path is kept off the critical path deliberately:
+
+| | before | now |
+|---|---|---|
+| clipboard poll | 350ms (pbpaste subprocess) | 100ms (native, 0.1ms/read) |
+| frontmost app | 178ms, blocking | 0ms — cached by a background thread |
+| raise the pill | 224ms (AppleScript) | ~68ms (Tk raises itself) |
+| back to terminal | 161ms (System Events) | ~74ms (`open -a`) |
+| **copy -> ready to type** | **~580ms** | **~120ms** |
+
+AppleScript is compiled once into `~/.claude-annotator-scripts` rather than
+recompiled on every call, and nothing that shells out runs on the UI thread.
+
 ## Notes / limitations
 
 - Copying the exact same text twice in a row doesn't register — it watches

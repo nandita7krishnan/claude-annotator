@@ -52,13 +52,15 @@ class FakeScript:
 
 def new_app(fake):
     ca.run_osascript = fake
+    # Never really switch apps during a test run.
+    ca.activate_app = lambda name: (fake.activated.append(name), True)[1]
     ca.save_pos = lambda *a: None  # don't touch the real config file
     # Start from a clipboard value no test uses, so the app's initial
     # last_clip never accidentally matches the first snippet we copy.
     set_clipboard("<<test fixture>>")
     root = tk.Tk()
     root.withdraw()
-    app = AnnotatorApp(root)
+    app = AnnotatorApp(root, watch=False)  # no watcher thread in tests
     # Record visibility decisions instead of actually showing a window.
     app.shown, app.hidden = [], []
     app.show = lambda focus=False: app.shown.append(focus)
@@ -69,6 +71,7 @@ def new_app(fake):
 def copies(app, text, front="Terminal"):
     """Simulate a Cmd+C in `front`, then one poll tick."""
     app._fake.front = front
+    app._front = front  # what the watcher thread would have cached
     set_clipboard(text)
     app.root.update()
     app.poll_clipboard()
@@ -144,12 +147,12 @@ def test_hides_when_terminal_not_front(fails):
         copies(app, SNIPPET_A, front="Terminal")
         app.shown.clear(); app.hidden.clear()
 
-        fake.front = "Safari"
+        app._front = "Safari"
         app.poll_frontmost()
         check(fails, app.hidden, "did not hide when terminal lost focus")
 
         app.shown.clear(); app.hidden.clear()
-        fake.front = "Terminal"
+        app._front = "Terminal"
         app.poll_frontmost()
         check(fails, app.shown, "did not come back when terminal returned")
 
@@ -244,6 +247,7 @@ def test_remove_selected(fails):
 def main():
     saved = get_clipboard()
     real_script, real_save = ca.run_osascript, ca.save_pos
+    real_activate = ca.activate_app
     fails = []
     try:
         for test in (
@@ -261,6 +265,7 @@ def main():
             print(f"  {'FAIL' if len(fails) > before else 'ok  '}  {test.__name__}")
     finally:
         ca.run_osascript, ca.save_pos = real_script, real_save
+        ca.activate_app = real_activate
         set_clipboard(saved)
 
     if fails:

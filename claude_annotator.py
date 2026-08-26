@@ -31,13 +31,19 @@ Permissions (System Settings > Privacy & Security):
 
 import json
 import os
+import re
 import subprocess
+import threading
 import tkinter as tk
 
 HERE = os.path.expanduser("~/.claude-annotator.json")
 
-POLL_CLIP_MS = 350
-POLL_FRONT_MS = 900
+# The clipboard read is a native Tk call (~0.1ms), so poll it often.
+POLL_CLIP_MS = 100
+# Frontmost lookup shells out, so it runs on a background thread and the
+# UI only ever reads the cached answer.
+POLL_FRONT_MS = 400
+SCRIPT_CACHE = os.path.expanduser("~/.claude-annotator-scripts")
 
 W = 380
 H_SMALL = 118
@@ -98,11 +104,67 @@ def set_clipboard(text: str) -> None:
     subprocess.run(["pbcopy"], input=text, text=True)
 
 
+_COMPILED = {}
+
+
+def compiled_path(source: str):
+    """Compile a script once and reuse it; osascript -e recompiles every call."""
+    if source in _COMPILED:
+        return _COMPILED[source]
+    path = None
+    try:
+        os.makedirs(SCRIPT_CACHE, exist_ok=True)
+        stem = os.path.join(SCRIPT_CACHE, f"{abs(hash(source)) & 0xffffffff:08x}")
+        path = stem + ".scpt"
+        if not os.path.exists(path):
+            with open(stem + ".applescript", "w") as fh:
+                fh.write(source)
+            done = subprocess.run(
+                ["osacompile", "-o", path, stem + ".applescript"],
+                capture_output=True, timeout=15,
+            )
+            try:
+                os.remove(stem + ".applescript")
+            except OSError:
+                pass
+            if done.returncode != 0:
+                path = None
+    except Exception:
+        path = None
+    _COMPILED[source] = path
+    return path
+
+
+_LS_NAME = re.compile(r'"LSDisplayName"="([^"]*)"')
+
+
+def frontmost_app():
+    """Name of the frontmost app. lsappinfo is ~4x faster than System Events."""
+    try:
+        asn = subprocess.run(
+            ["lsappinfo", "front"], capture_output=True, text=True, timeout=2
+        ).stdout.strip()
+        if asn:
+            out = subprocess.run(
+                ["lsappinfo", "info", "-only", "name", asn],
+                capture_output=True, text=True, timeout=2,
+            ).stdout
+            found = _LS_NAME.search(out)
+            if found and found.group(1):
+                return found.group(1)
+    except Exception:
+        pass
+    out, err = run_osascript(_FRONTMOST)
+    return None if err else out
+
+
 def run_osascript(script: str, *args: str):
     """Return (stdout, error). Exactly one of the two is None."""
+    path = compiled_path(script)
+    cmd = ["osascript", path, *args] if path else ["osascript", "-e", script, *args]
     try:
         proc = subprocess.run(
-            ["osascript", "-e", script, *args],
+            cmd,
             capture_output=True,
             text=True,
             timeout=10,
@@ -112,6 +174,18 @@ def run_osascript(script: str, *args: str):
     if proc.returncode != 0:
         return None, (proc.stderr or "").strip() or "osascript failed"
     return proc.stdout.strip(), None
+
+
+def activate_app(name: str) -> bool:
+    """Bring an app forward. open(1) is ~2x faster than driving System Events."""
+    try:
+        done = subprocess.run(["open", "-a", name], capture_output=True, timeout=3)
+        if done.returncode == 0:
+            return True
+    except Exception:
+        pass
+    _, err = run_osascript(_ACTIVATE_NAME, name)
+    return err is None
 
 
 def needs_accessibility(err: str) -> bool:
@@ -142,7 +216,7 @@ def save_pos(x, y):
 
 
 class AnnotatorApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, watch: bool = True):
         self.root = root
         self.items = []  # (snippet_or_None, note)
         self.snippet = ""  # what you last copied
@@ -155,8 +229,21 @@ class AnnotatorApp:
         self.visible = True
         self._clip_timer = None
         self._front_timer = None
+        self._front = None  # cached frontmost app, written by the watcher
+        self._stop_evt = threading.Event()
+        self._watcher = None
 
-        root.overrideredirect(True)
+        self.borderless = True
+        try:
+            # The documented macOS way to drop the title bar while staying a
+            # real, focusable window. overrideredirect() looks the same but
+            # can't become the key window, so typing goes nowhere.
+            root.tk.call("::tk::unsupported::MacWindowStyle", "style", root._w, "plain")
+        except tk.TclError:
+            try:
+                root.overrideredirect(True)
+            except tk.TclError:
+                self.borderless = False
         root.attributes("-topmost", True)
         try:
             root.attributes("-transparent", True)
@@ -198,6 +285,10 @@ class AnnotatorApp:
         self._build()
         self._bind()
         self.last_clip = self._read_clipboard()
+        if watch:
+            self._front = frontmost_app()
+            self._watcher = threading.Thread(target=self._watch_front, daemon=True)
+            self._watcher.start()
         self.poll_clipboard()
         self.poll_frontmost()
 
@@ -290,12 +381,17 @@ class AnnotatorApp:
         c.bind("<B1-Motion>", self._drag_move)
         c.bind("<ButtonRelease-1>", self._drag_end)
 
+        if os.environ.get("CLAUDE_ANNOTATOR_DEBUG"):
+            self.root.bind_all("<Key>", lambda e: print(f"[key] {e.keysym!r} -> {e.widget}", flush=True))
+            self.root.bind("<FocusIn>", lambda e: print(f"[focus-in] {e.widget}", flush=True))
+            self.root.bind("<FocusOut>", lambda e: print(f"[focus-out] {e.widget}", flush=True))
         self.note_entry.bind("<Return>", lambda e: self.queue_and_return())
         self.note_entry.bind("<Command-Return>", lambda e: self.send_to_terminal())
         self.root.bind("<Command-Return>", lambda e: self.send_to_terminal())
         self.root.bind("<Escape>", lambda e: self.hide(by_user=True))
 
     def _drag_start(self, event):
+        self.note_entry.focus_set()
         self._drag = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
 
     def _drag_move(self, event):
@@ -316,7 +412,6 @@ class AnnotatorApp:
             self.visible = True
         if focus:
             self.activate_self()
-            self.note_entry.focus_force()
 
     def hide(self, by_user=False):
         if self.visible:
@@ -336,7 +431,11 @@ class AnnotatorApp:
         setattr(self, attr, self.root.after(ms, fn))
 
     def stop(self):
-        """Cancel pending timers so nothing fires after the window is gone."""
+        """Cancel pending timers and stop the watcher thread."""
+        self._stop_evt.set()
+        if self._watcher is not None:
+            self._watcher.join(timeout=1)
+            self._watcher = None
         for timer in (self._clip_timer, self._front_timer):
             if timer is not None:
                 try:
@@ -355,11 +454,20 @@ class AnnotatorApp:
         self._build()
 
     def activate_self(self):
-        run_osascript(_ACTIVATE_PID, self._self_pid)
+        """Raise and focus ourselves. Tk manages this without AppleScript."""
+        self.root.lift()
+        self.note_entry.focus_force()
+        self.root.update_idletasks()
+        if self.root.focus_get() is not None:
+            return True
+        _, err = run_osascript(_ACTIVATE_PID, self._self_pid)  # fallback
+        if err:
+            self._set_status("couldn't focus myself — click me", RED)
+        return err is None
 
     def activate_target(self):
         if self.target_app:
-            run_osascript(_ACTIVATE_NAME, self.target_app)
+            activate_app(self.target_app)
 
     def self_app_name(self):
         if self._self_app is None:
@@ -367,10 +475,16 @@ class AnnotatorApp:
             self._self_app = out or ""
         return self._self_app
 
+    def _watch_front(self):
+        while not self._stop_evt.wait(POLL_FRONT_MS / 1000):
+            name = frontmost_app()
+            if name:
+                self._front = name
+
     def poll_frontmost(self):
         """Only be on screen while the terminal you copy from is in front."""
-        front, err = run_osascript(_FRONTMOST)
-        if not err and front:
+        front = self._front
+        if front:
             if self.target_app is None:
                 pass  # nothing learned yet — stay put
             elif front in (self.target_app, self.self_app_name()):
@@ -392,7 +506,7 @@ class AnnotatorApp:
         clip = self._read_clipboard()
         if clip != self.last_clip and clip.strip():
             self.last_clip = clip
-            front, _ = run_osascript(_FRONTMOST)
+            front = self._front
             from_terminal = bool(front) and front not in ("", self.self_app_name())
             if from_terminal:
                 self.target_app = front
@@ -401,6 +515,7 @@ class AnnotatorApp:
             self._refresh()
             if from_terminal:
                 self.hidden_by_user = False
+                self.root.update_idletasks()  # draw first, then switch focus
                 self.show(focus=True)
             self._set_status(
                 f"queued {len(self.items)} — next note?" if queued else "type your note",
