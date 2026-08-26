@@ -85,7 +85,12 @@ def run_osascript(script: str, *args: str):
 
 def needs_accessibility(err: str) -> bool:
     low = err.lower()
-    return "-1719" in low or "not allowed" in low or "assistive" in low
+    return (
+        "not allowed" in low
+        or "assistive" in low
+        or "-1719" in low  # not authorised to send Apple events
+        or "(1002)" in low  # osascript is not allowed to send keystrokes
+    )
 
 
 class AnnotatorApp:

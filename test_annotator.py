@@ -143,7 +143,10 @@ def test_send(fails):
 
 
 def test_send_without_accessibility(fails):
-    fake = FakeScript(paste_error="execution error: not allowed assistive access (-1719)")
+    fake = FakeScript(
+        paste_error="System Events got an error: osascript is not allowed "
+        "to send keystrokes. (1002)"
+    )
     root, app = new_app(fake)
     try:
         copies(app, SNIPPET_A)
