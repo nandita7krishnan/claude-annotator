@@ -132,6 +132,8 @@ recompiled on every call, and nothing that shells out runs on the UI thread.
   permission never costs you your notes.
 - Works with any terminal (Terminal.app, iTerm2, Warp, …).
 - The pill has no Dock icon or title bar, so quit with `✕`, not Cmd+Q.
+- Only one pill runs at a time. A second launch tells you the pid of the
+  one already running and exits — two would fight over the clipboard.
 
 ## Tests
 

@@ -37,6 +37,7 @@ import threading
 import tkinter as tk
 
 HERE = os.path.expanduser("~/.claude-annotator.json")
+PIDFILE = os.path.expanduser("~/.claude-annotator.pid")
 
 # Only copies made in one of these count as annotation material. Anything
 # else -- an editor, a browser, chat -- is ignored completely. Add your own
@@ -698,7 +699,48 @@ class AnnotatorApp:
         return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+def already_running() -> int:
+    """PID of a live pill, or 0. Two pills would fight over the clipboard."""
+    try:
+        with open(PIDFILE) as fh:
+            pid = int(fh.read().strip())
+    except Exception:
+        return 0
+    if pid == os.getpid():
+        return 0
+    try:
+        os.kill(pid, 0)  # signal 0 just tests for existence
+    except OSError:
+        return 0
+    return pid
+
+
+def claim_pidfile():
+    try:
+        with open(PIDFILE, "w") as fh:
+            fh.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
+def release_pidfile():
+    try:
+        if already_running() == 0 and os.path.exists(PIDFILE):
+            os.remove(PIDFILE)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = AnnotatorApp(root)
-    root.mainloop()
+    running = already_running()
+    if running:
+        print(f"Claude Annotator is already running (pid {running}).")
+        print(f"Quit it with the ✕, or: kill {running}")
+        raise SystemExit(0)
+    claim_pidfile()
+    try:
+        root = tk.Tk()
+        app = AnnotatorApp(root)
+        root.mainloop()
+    finally:
+        release_pidfile()
