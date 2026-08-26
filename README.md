@@ -70,10 +70,19 @@ Both live in **System Settings > Privacy & Security**.
 
 ## How it decides things
 
-- **Which terminal to paste into**: whichever app was frontmost the last
-  time you copied. Copy from it once and the pill learns it.
-- **When to grab focus**: only when you copied from that terminal. Copying
-  in a browser won't yank you out of what you were doing.
+- **What counts as a copy**: only copies made in a terminal. Copying in an
+  editor, browser, or chat app is ignored completely — no snippet, no
+  focus grab, no change of paste target. Known terminals are Terminal,
+  iTerm2, Warp, Alacritty, kitty, WezTerm, Ghostty, Hyper, Tabby, rio and
+  Contour. Using something else? Add it:
+
+  ```json
+  // ~/.claude-annotator.json
+  { "terminals": ["My Terminal"] }
+  ```
+
+- **Which terminal to paste into**: whichever terminal you last copied
+  from. Copy from it once and the pill learns it.
 - **When to be on screen**: only while that terminal (or the pill itself)
   is frontmost. `Esc` keeps it away until your next copy.
 

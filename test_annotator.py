@@ -54,7 +54,6 @@ def new_app(fake):
     ca.run_osascript = fake
     # Never really switch apps during a test run.
     ca.activate_app = lambda name: (fake.activated.append(name), True)[1]
-    ca.save_pos = lambda *a: None  # don't touch the real config file
     # Start from a clipboard value no test uses, so the app's initial
     # last_clip never accidentally matches the first snippet we copy.
     set_clipboard("<<test fixture>>")
@@ -121,23 +120,59 @@ def test_enter_returns_focus(fails):
         root.destroy()
 
 
-def test_focus_grab_only_from_terminal(fails):
-    """Copying elsewhere must not yank focus out of unrelated work."""
+def test_only_captures_from_terminals(fails):
+    """Copying in an editor must be ignored entirely -- the original bug."""
     fake = FakeScript()
     root, app = build(fake)
     try:
         copies(app, SNIPPET_A, front="Terminal")
         check(fails, app.shown and app.shown[-1] is True,
-              f"should have grabbed focus: {app.shown!r}")
+              f"should have grabbed focus from the terminal: {app.shown!r}")
 
-        app.shown.clear()
-        copies(app, "unrelated copy", front="Python")  # our own app == not a terminal
-        check(fails, app.shown == [], f"grabbed focus from non-terminal: {app.shown!r}")
-        check(fails, app.target_app == "Terminal",
-              f"target drifted to a non-terminal: {app.target_app!r}")
+        # Every one of these is a plausible app to copy from mid-session.
+        for editor in ("Code", "TextEdit", "Safari", "Slack", "Notes"):
+            app.shown.clear()
+            before_target, before_snippet = app.target_app, app.snippet
+            copies(app, f"copied inside {editor}", front=editor)
+            check(fails, app.shown == [],
+                  f"{editor}: grabbed focus from a non-terminal: {app.shown!r}")
+            check(fails, app.target_app == before_target,
+                  f"{editor}: paste target drifted to {app.target_app!r}")
+            check(fails, app.snippet == before_snippet,
+                  f"{editor}: captured a snippet it should have ignored: {app.snippet!r}")
+            check(fails, app.items == [],
+                  f"{editor}: queued something from a non-terminal: {app.items!r}")
     finally:
         app.stop()
         root.destroy()
+
+
+def test_terminal_matching(fails):
+    """Other terminals work, and the allowlist is case-insensitive."""
+    for name in ("iTerm2", "Ghostty", "WezTerm", "warp"):
+        fake = FakeScript()
+        root, app = build(fake)
+        try:
+            copies(app, SNIPPET_A, front=name)
+            check(fails, app.target_app == name, f"{name} not recognised as a terminal")
+            check(fails, app.snippet == SNIPPET_A, f"{name}: snippet not captured")
+        finally:
+            app.stop()
+            root.destroy()
+
+
+def test_config_is_not_clobbered(fails):
+    """Saving the window position must not wipe a user's terminals list."""
+    import json
+    with open(ca.HERE, "w") as fh:               # ca.HERE is a temp file here
+        json.dump({"terminals": ["My Terminal"]}, fh)
+    ca.save_pos(12, 34)
+    cfg = json.load(open(ca.HERE))
+    check(fails, cfg.get("terminals") == ["My Terminal"],
+          f"save_pos wiped user config: {cfg!r}")
+    check(fails, (cfg.get("x"), cfg.get("y")) == (12, 34), f"position not saved: {cfg!r}")
+    check(fails, "my terminal" in ca.terminal_names(),
+          "custom terminal not picked up from config")
 
 
 def test_hides_when_terminal_not_front(fails):
@@ -245,7 +280,14 @@ def test_remove_selected(fails):
 
 
 def main():
+    import os as _os
+    import tempfile
+
     saved = get_clipboard()
+    # Never read or write the real ~/.claude-annotator.json during tests.
+    real_here = ca.HERE
+    fd, ca.HERE = tempfile.mkstemp(suffix=".json")
+    _os.close(fd)
     real_script, real_save = ca.run_osascript, ca.save_pos
     real_activate = ca.activate_app
     fails = []
@@ -253,7 +295,9 @@ def main():
         for test in (
             test_auto_queue,
             test_enter_returns_focus,
-            test_focus_grab_only_from_terminal,
+            test_only_captures_from_terminals,
+            test_terminal_matching,
+            test_config_is_not_clobbered,
             test_hides_when_terminal_not_front,
             test_note_without_snippet,
             test_send,
@@ -266,6 +310,8 @@ def main():
     finally:
         ca.run_osascript, ca.save_pos = real_script, real_save
         ca.activate_app = real_activate
+        _os.unlink(ca.HERE)
+        ca.HERE = real_here
         set_clipboard(saved)
 
     if fails:

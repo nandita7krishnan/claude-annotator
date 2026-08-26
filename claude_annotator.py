@@ -38,6 +38,14 @@ import tkinter as tk
 
 HERE = os.path.expanduser("~/.claude-annotator.json")
 
+# Only copies made in one of these count as annotation material. Anything
+# else -- an editor, a browser, chat -- is ignored completely. Add your own
+# with {"terminals": ["My Terminal"]} in ~/.claude-annotator.json.
+DEFAULT_TERMINALS = [
+    "Terminal", "iTerm2", "iTerm", "Warp", "Alacritty", "kitty", "WezTerm",
+    "Ghostty", "Hyper", "Tabby", "rio", "Contour",
+]
+
 # The clipboard read is a native Tk call (~0.1ms), so poll it often.
 POLL_CLIP_MS = 100
 # Frontmost lookup shells out, so it runs on a background thread and the
@@ -198,21 +206,42 @@ def needs_accessibility(err: str) -> bool:
     )
 
 
-def load_pos():
+def load_config() -> dict:
     try:
         with open(HERE) as fh:
             cfg = json.load(fh)
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_config(**updates):
+    """Merge into the existing config rather than overwriting it."""
+    cfg = load_config()
+    cfg.update(updates)
+    try:
+        with open(HERE, "w") as fh:
+            json.dump(cfg, fh, indent=2)
+    except Exception:
+        pass
+
+
+def load_pos():
+    cfg = load_config()
+    try:
         return int(cfg["x"]), int(cfg["y"])
     except Exception:
         return None
 
 
 def save_pos(x, y):
-    try:
-        with open(HERE, "w") as fh:
-            json.dump({"x": x, "y": y}, fh)
-    except Exception:
-        pass
+    save_config(x=x, y=y)
+
+
+def terminal_names():
+    extra = load_config().get("terminals") or []
+    names = list(DEFAULT_TERMINALS) + [str(n) for n in extra]
+    return {n.casefold() for n in names}
 
 
 class AnnotatorApp:
@@ -230,6 +259,7 @@ class AnnotatorApp:
         self._clip_timer = None
         self._front_timer = None
         self._front = None  # cached frontmost app, written by the watcher
+        self.terminals = terminal_names()
         self._stop_evt = threading.Event()
         self._watcher = None
 
@@ -496,6 +526,9 @@ class AnnotatorApp:
 
     # ---------- clipboard ----------
 
+    def is_terminal(self, name) -> bool:
+        return bool(name) and name.casefold() in self.terminals
+
     def _read_clipboard(self):
         try:
             return self.root.clipboard_get()
@@ -507,16 +540,20 @@ class AnnotatorApp:
         if clip != self.last_clip and clip.strip():
             self.last_clip = clip
             front = self._front
-            from_terminal = bool(front) and front not in ("", self.self_app_name())
-            if from_terminal:
-                self.target_app = front
+            if not self.is_terminal(front):
+                # Copied in an editor, a browser, anywhere else -- not ours.
+                # Don't capture it, don't steal focus, don't retarget.
+                if front and front != self.self_app_name():
+                    self._set_status(f"ignoring copies from {front}", DIM)
+                self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
+                return
+            self.target_app = front
             queued = self.commit_pending()
             self.snippet = clip.strip()
             self._refresh()
-            if from_terminal:
-                self.hidden_by_user = False
-                self.root.update_idletasks()  # draw first, then switch focus
-                self.show(focus=True)
+            self.hidden_by_user = False
+            self.root.update_idletasks()  # draw first, then switch focus
+            self.show(focus=True)
             self._set_status(
                 f"queued {len(self.items)} — next note?" if queued else "type your note",
                 GREEN if queued else DIM,
