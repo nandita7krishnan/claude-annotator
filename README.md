@@ -1,175 +1,232 @@
 # Clanno
 
-A small floating pill that sits next to your terminal while you're working
-with Claude Code. Highlight something in Claude's reply, say what you think,
-and it compiles every note into one message and pastes it back for you.
+A small floating pill for annotating Claude Code's replies. Highlight
+something Claude said, type what you think, repeat — then it compiles every
+note into one message and pastes it back into your terminal.
 
 ```
   ╭────────────────────────────╮
-  │  "def foo(): return 1"     │
+  │  "def foo(): return 1"   ✕ │
   │   should return 2▌         │
-  │   ● 3 queued      Send ⌘⏎  │
+  │   ● 3 queued     Send ⌘⏎   │
   ╰────────────────────────────╯
 ```
 
-It stays out of the way: no title bar, ~380x118, and it hides itself
-whenever your terminal isn't the frontmost app.
+Borderless, ~380×118, always on top, and it hides itself whenever your
+terminal isn't frontmost — so it's only on screen when you're working.
 
-## The loop
+macOS only. It leans on AppleScript and macOS clipboard tooling throughout.
 
-Hands stay on the keyboard the whole time.
+---
 
-1. Select text in your terminal and press **Cmd+C**, same as always.
-2. The pill appears, already focused, with your snippet shown above the
-   note field.
-3. Type your note and press **Enter**. That queues it *and* throws focus
-   back to your terminal.
-4. Select the next thing, Cmd+C, type, Enter. Repeat.
-5. Press **Cmd+Enter**. It compiles the batch, switches to your terminal,
-   and pastes.
-6. Read it over and press Enter yourself.
+## Install
 
-It never presses Enter for you, so nothing is sent until you've seen it.
-
-## What gets pasted
-
-A single line:
-
-```
-Feedback on your response — Re: "snippet one" → note one  |  Re: "snippet two" → note two
-```
-
-One line on purpose. Claude Code collapses any multi-line paste into
-`[Pasted text #1 +N lines]`, so a block format means you never see what
-you're about to send. Snippets have their whitespace flattened, not
-dropped, so multi-line code still reads sensibly.
-
-Prefer the old block format? Put `{"compact": false}` in
-`~/.clanno.json`.
-
-## Keys
-
-| | |
-|---|---|
-| `Enter` | queue this note, return to the terminal |
-| `Cmd+Enter` | send everything |
-| `Esc` | hide (comes back next time you copy) |
-| click `● N queued` | show/hide the queue |
-| click `✕` | quit |
-
-Drag the pill from anywhere on it. It remembers where you left it.
-
-## Setup
-
-Requires Python 3 with tkinter.
-
-- python.org installer: tkinter is already included.
-- Homebrew: `brew install python-tk`.
-
-No pip packages — it uses tkinter's own clipboard and macOS's `osascript`.
-
-**Install it properly** (builds `~/Applications/Clanno.app` and starts it
-at login):
+**1. Check you have Python 3 with tkinter.**
 
 ```bash
+python3 -c "import tkinter; print('ok')"
+```
+
+If that errors, install tkinter: `brew install python-tk` (Homebrew), or use
+the python.org installer, which bundles it. Anaconda's Python works too.
+There are no pip dependencies.
+
+**2. Clone and install.**
+
+```bash
+git clone https://github.com/nandita7krishnan/claude-annotator.git
+cd claude-annotator
 ./install.sh
 ```
 
-It restarts on a crash but respects quitting: hit the pill's `✕` and it
-stays gone until next login, or bring it back with
-`launchctl kickstart gui/$UID/com.clanno.pill`.
+That builds `~/Applications/Clanno.app` (bundling a copy of whichever
+`python3` is first on your PATH) and installs a LaunchAgent so Clanno
+starts at every login. It's running immediately — no reboot.
 
-To remove it — app and login agent, config untouched:
+**3. Grant the two permissions.** See below. Clanno is usable after step 2,
+but the auto-paste won't work until you've done step 3.
+
+### Uninstall
 
 ```bash
 ./install.sh --uninstall
 ```
 
-Or just run it in the foreground while hacking on it:
+Removes the app and the LaunchAgent. Your `~/.clanno.json` is left alone.
 
-```bash
-python3 clanno.py
+---
+
+## Permissions
+
+Two separate macOS permissions, and they behave very differently.
+
+### Automation — required, prompts you
+
+Lets Clanno see which app is frontmost and switch back to your terminal.
+**macOS will show a dialog** the first time ("Clanno wants to control
+System Events"). Click OK. Nothing works without this.
+
+### Accessibility — optional, does NOT prompt you
+
+Only needed for the final auto-paste. **macOS shows no dialog for this —
+it silently refuses**, so you must add Clanno by hand. Without it,
+`Cmd+Enter` still compiles everything onto your clipboard and tells you to
+paste it yourself; you just lose the last bit of automation.
+
+To grant it:
+
+1. Open **System Settings > Privacy & Security > Accessibility**.
+2. In Finder, open your **home folder > Applications** (this is *not* the
+   main `/Applications`). Or run `open ~/Applications`.
+3. **Drag `Clanno` from that Finder window into the Accessibility list**,
+   and make sure its toggle is **on**.
+
+Prefer the **+** button? Click it, then press **Command-Shift-G** (this
+opens a "Go to Folder" box), type `~/Applications`, press Return, pick
+Clanno.
+
+> **Don't bother searching for "Clanno" in that file picker.** If your
+> Spotlight index is read-only or disabled — which is common — the search
+> finds nothing no matter what. Navigate to the path instead.
+
+> **Re-running `./install.sh` may cost you this grant.** It rebuilds and
+> ad-hoc re-signs the bundle, which changes its code identity, and macOS
+> keys the permission on that. Just drag it in again. Fixing this properly
+> needs a paid Developer ID certificate.
+
+> **Running `python3 clanno.py` directly instead of the app?** Then the
+> permission belongs to *your terminal*, not to Clanno — grant it to
+> Terminal/iTerm instead. Note that's a much broader grant: every script
+> that terminal runs can then send keystrokes.
+
+---
+
+## Using it
+
+The loop is **copy → type → Enter**, repeated. Hands stay on the keyboard.
+
+1. Select text in your terminal and press **Cmd+C**, as you normally would.
+2. The pill appears, already focused, showing your snippet.
+3. Type your note and press **Enter**. That queues it *and* throws focus
+   back to your terminal.
+4. Select the next thing, Cmd+C, type, Enter. Repeat as often as you like.
+5. Press **Cmd+Enter**. It compiles the batch, switches to your terminal,
+   and pastes.
+6. Read it and press Enter yourself.
+
+**It never presses Enter for you.** Nothing is sent until you've seen it.
+
+### Keys
+
+| Key | Does |
+|---|---|
+| `Enter` | queue this note, hand focus back to the terminal |
+| `Cmd+Enter` | compile everything and paste it into your terminal |
+| `Esc` | hide (returns on your next copy) |
+| click `● N queued` | expand/collapse the queue |
+| click `✕` | quit |
+
+Drag the pill from anywhere on it; it remembers where you left it.
+
+### What gets pasted
+
+One line:
+
+```
+Feedback on your response — Re: "snippet one" → note one  |  Re: "snippet two" → note two
 ```
 
-### Permissions
+One line on purpose: Claude Code collapses any multi-line paste into
+`[Pasted text #1 +N lines]`, so a block format means you'd never see what
+you're about to send. Snippet whitespace is flattened, not dropped, so
+multi-line code still reads sensibly.
 
-Both live in **System Settings > Privacy & Security**.
+---
 
-- **Automation** — required. Lets the pill see which app is frontmost and
-  switch back to your terminal. macOS prompts for this the first time.
-- **Accessibility** — optional, for the final auto-paste only. macOS shows
-  *no prompt* for this and silently refuses instead, so add it by hand:
-  Accessibility > **+**, then ⌘⇧G and paste
-  `~/Applications/Clanno.app`. (Finder search won't find it if your
-  Spotlight index is read-only — navigate to the path directly.)
-  Without it, `Cmd+Enter` still compiles and copies everything and tells
-  you to paste it yourself.
+## Configuration
 
-  Running from a terminal instead of the app? Then the permission belongs
-  to *that terminal*, not to Clanno.
+Optional. `~/.clanno.json`, created on first drag:
 
-  Re-running `./install.sh` rebuilds and re-signs the bundle ad-hoc, which
-  changes its code identity — macOS may drop the Accessibility grant and
-  you'll need to re-add it. Nothing to do about that short of a real
-  Developer ID certificate.
+```json
+{
+  "terminals": ["My Terminal"],
+  "min_chars": 3,
+  "autofocus": true,
+  "compact": true
+}
+```
 
-## How it decides things
+| Key | Default | Meaning |
+|---|---|---|
+| `terminals` | — | **Extra** apps to treat as terminals, added to the built-ins |
+| `min_chars` | `3` | Copies shorter than this are ignored entirely |
+| `autofocus` | `true` | `false` = never take your keyboard; you click in when ready |
+| `compact` | `true` | `false` = multi-line block output instead of one line |
+| `x`, `y` | — | Window position; written for you when you drag the pill |
+
+Built-in terminals: Terminal, iTerm2, iTerm, Warp, Alacritty, kitty,
+WezTerm, Ghostty, Hyper, Tabby, rio, Contour.
+
+### How it decides things
 
 - **What counts as a copy**: only copies made in a terminal. Copying in an
-  editor, browser, or chat app is ignored completely — no snippet, no
-  focus grab, no change of paste target. Known terminals are Terminal,
-  iTerm2, Warp, Alacritty, kitty, WezTerm, Ghostty, Hyper, Tabby, rio and
-  Contour. Using something else? Add it:
+  editor, browser, or chat app is ignored completely — no snippet, no focus
+  grab, no change of paste target.
+- **What's big enough**: copies under `min_chars` are ignored, so a stray
+  prompt character can't take your keyboard mid-sentence.
+- **Which terminal to paste into**: whichever terminal you last copied from.
+- **When to be on screen**: only while that terminal (or the pill) is
+  frontmost.
 
-  ```json
-  // ~/.clanno.json
-  { "terminals": ["My Terminal"] }
-  ```
+---
 
-- **What's big enough to be a snippet**: copies under 3 characters are
-  ignored outright — a stray prompt character or an accidental
-  copy-on-select shouldn't capture anything or take your keyboard. Tune
-  with `{"min_chars": 3}`.
-- **Which terminal to paste into**: whichever terminal you last copied
-  from. Copy from it once and the pill learns it.
-- **When to be on screen**: only while that terminal (or the pill itself)
-  is frontmost. `Esc` keeps it away until your next copy.
-- **Whether to take the keyboard at all**: set `{"autofocus": false}` and
-  the pill stays passive — it still catches snippets, you just click or
-  Cmd+Tab in when you actually want to write a note.
+## Troubleshooting
+
+**Nothing happens when I copy.** Is your terminal in the built-in list? If
+not, add it under `terminals` in `~/.clanno.json` and restart Clanno
+(`launchctl kickstart -k gui/$UID/com.clanno.pill`). Also check the copy was
+at least `min_chars` long.
+
+**"copied — allow Accessibility to auto-paste".** The Accessibility grant is
+missing or was reset. See Permissions above.
+
+**The pill never appears.** Check it's running and read the log:
+
+```bash
+launchctl print gui/$UID/com.clanno.pill | grep -E "state|pid"
+cat /tmp/clanno.err.log
+```
+
+**"Clanno is already running (pid N)".** Only one instance is allowed —
+two would fight over the clipboard. Quit the other with its `✕`, or
+`kill N`.
+
+**It grabs focus when I didn't want it to.** Set `"autofocus": false`. The
+pill still catches snippets; you click in when you actually want to write.
+
+**I want it gone right now.** `./install.sh --uninstall`.
+
+---
+
+## Development
+
+```bash
+python3 clanno.py          # run in the foreground, no install
+python3 test_clanno.py     # 14 tests, ~10s, no pytest needed
+```
+
+Tests stub out AppleScript and app-switching, so they never steal focus or
+switch apps, and they save and restore your clipboard. Contributor notes and
+architecture are in [AGENTS.md](AGENTS.md).
 
 ## Speed
 
-The copy -> focus path is kept off the critical path deliberately:
+The copy → focus path is deliberately kept off the critical path:
 
-| | before | now |
+| | naive | now |
 |---|---|---|
-| clipboard poll | 350ms (pbpaste subprocess) | 100ms (native, 0.1ms/read) |
+| clipboard poll | 350ms (`pbpaste` subprocess) | 100ms (native Tk, 0.1ms/read) |
 | frontmost app | 178ms, blocking | 0ms — cached by a background thread |
 | raise the pill | 224ms (AppleScript) | ~68ms (Tk raises itself) |
 | back to terminal | 161ms (System Events) | ~74ms (`open -a`) |
-| **copy -> ready to type** | **~580ms** | **~120ms** |
-
-AppleScript is compiled once into `~/.clanno-scripts` rather than
-recompiled on every call, and nothing that shells out runs on the UI thread.
-
-## Notes / limitations
-
-- Copying the exact same text twice in a row doesn't register — it watches
-  for clipboard *changes*.
-- A successful send clears the queue. A failed one keeps it, so a missing
-  permission never costs you your notes.
-- Works with any terminal (Terminal.app, iTerm2, Warp, …).
-- The pill has no Dock icon or title bar, so quit with `✕`, not Cmd+Q.
-- Only one pill runs at a time. A second launch tells you the pid of the
-  one already running and exits — two would fight over the clipboard.
-
-## Tests
-
-```bash
-python3 test_clanno.py
-```
-
-Drives the whole loop against a hidden window. `osascript` is stubbed, so
-it never switches apps or sends keystrokes, and it saves and restores your
-clipboard.
+| **copy → ready to type** | **~580ms** | **~120ms** |
