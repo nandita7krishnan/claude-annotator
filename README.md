@@ -213,6 +213,7 @@ pill still catches snippets; you click in when you actually want to write.
 ```bash
 python3 clanno.py          # run in the foreground, no install
 python3 test_clanno.py     # 14 tests, ~10s, no pytest needed
+python3 icon.py            # regenerate Clanno.icns (committed; rarely needed)
 ```
 
 Tests stub out AppleScript and app-switching, so they never steal focus or

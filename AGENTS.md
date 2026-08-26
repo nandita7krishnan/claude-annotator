@@ -14,6 +14,8 @@ there's a strong reason; the zero-dependency install is a feature.
 clanno.py        the whole app
 test_clanno.py   14 tests, plain python, no pytest
 install.sh       builds ~/Applications/Clanno.app + a LaunchAgent
+icon.py          regenerates Clanno.icns from a handful of shape constants
+Clanno.icns      committed, so installing doesn't need to build it
 ```
 
 ## Running things
@@ -26,6 +28,19 @@ python3 test_clanno.py   # ~10s; exits non-zero on failure
 
 `install.sh` is not automatic — **editing `clanno.py` does not update the
 installed app.** The bundle has its own copy in `Contents/Resources/`.
+
+`python3 icon.py` rebuilds `Clanno.icns` (~50s) and is only needed if you
+change the icon's shape constants; `install.sh` just copies the committed
+file. It draws from signed distance fields with no PIL and no supersampling,
+so each size in the iconset is rendered from the vector description rather
+than downscaled instead of being resampled from one big bitmap.
+
+Two things there are load-bearing. `stroke()` culls by bounding box before
+testing segments — without it a single render takes minutes, not seconds.
+And **`MARKS` is deliberately short**: the marks were scattered much more
+densely at first and 16px turned into pink noise, so resist adding more.
+macOS also caches icons aggressively; if a rebuilt bundle still shows the
+old one, that's the Finder cache, not the plist.
 
 Only one instance runs at a time (pidfile at `~/.clanno.pid`). If you launch
 it for testing, kill it before launching again, or the guard will refuse.
