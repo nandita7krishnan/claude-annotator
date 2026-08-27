@@ -293,10 +293,20 @@ class AnnotatorApp:
             pass
         root.configure(bg="systemTransparent")
 
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         pos = load_pos()
         if pos is None:
-            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
             pos = (sw - W - 40, sh - H_SMALL - 120)
+        else:
+            # A position saved on a bigger display must not be trusted. Undock
+            # an external monitor and the pill would otherwise be restored to
+            # coordinates off the edge of the built-in screen -- it renders and
+            # takes focus exactly as normal, just where nobody can see it, which
+            # looks indistinguishable from the app being broken. Keep a margin
+            # on screen rather than clamping flush to the edge.
+            edge = 60
+            pos = (min(max(pos[0], -W + edge), sw - edge),
+                   min(max(pos[1], 0), sh - edge))
         root.geometry(f"{W}x{H_SMALL}+{pos[0]}+{pos[1]}")
 
         self.canvas = tk.Canvas(
@@ -489,7 +499,14 @@ class AnnotatorApp:
     def quit(self):
         save_pos(self.root.winfo_x(), self.root.winfo_y())
         self.stop()
-        self.root.destroy()
+        # Deliberately skip Tk's teardown. Destroying the widget tree panics
+        # Tcl's allocator on some Tk builds -- anaconda's 8.6 aborts inside
+        # Tk_FreeFont via DestroyCanvas, "alloc: invalid block" -- and a
+        # SIGABRT is a non-zero exit, so the LaunchAgent's KeepAlive relaunches
+        # the pill instantly. That defeats the one thing the ✕ promises. There
+        # is nothing to flush or close, so exit before Tk can unwind.
+        release_pidfile()
+        os._exit(0)
 
     def toggle_expand(self):
         self.expanded = not self.expanded
