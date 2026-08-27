@@ -6,6 +6,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HOME/Applications/Clanno.app"
+OPENER="$HOME/Applications/Open Clanno.app"
 PLIST="$HOME/Library/LaunchAgents/com.clanno.pill.plist"
 LABEL="com.clanno.pill"
 
@@ -16,9 +17,9 @@ stop_agent() {
 if [[ "${1:-}" == "--uninstall" ]]; then
   stop_agent
   rm -f "$PLIST"
-  rm -rf "$APP"
+  rm -rf "$APP" "$OPENER"
   pkill -f "Clanno.app" 2>/dev/null || true
-  echo "Removed Clanno.app and the login agent. Config in ~/.clanno.json was left alone."
+  echo "Removed Clanno.app, Open Clanno.app and the login agent. Config in ~/.clanno.json was left alone."
   exit 0
 fi
 
@@ -78,6 +79,49 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$APP" >/dev/null 2>&1 && echo "signed (ad-hoc)" || echo "note: could not sign; permissions may reset on rebuild"
 fi
 
+# --- Spotlight opener ---------------------------------------------------
+# Clanno is LSUIElement with no Dock icon, so once the pill's X quits it
+# there is nothing to click. This tiny bundle is the way back in: type
+# "Open Clanno" into Spotlight and it restarts the login agent.
+rm -rf "$OPENER"
+mkdir -p "$OPENER/Contents/MacOS" "$OPENER/Contents/Resources"
+cp "$REPO/Clanno.icns" "$OPENER/Contents/Resources/Clanno.icns"
+
+cat > "$OPENER/Contents/Info.plist" <<OPENER_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Open Clanno</string>
+  <key>CFBundleDisplayName</key><string>Open Clanno</string>
+  <key>CFBundleIdentifier</key><string>com.clanno.opener</string>
+  <key>CFBundleExecutable</key><string>OpenClanno</string>
+  <key>CFBundleIconFile</key><string>Clanno</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSUIElement</key><true/>
+  <key>LSBackgroundOnly</key><true/>
+</dict>
+</plist>
+OPENER_EOF
+
+cat > "$OPENER/Contents/MacOS/OpenClanno" <<'OPENER_SH'
+#!/bin/bash
+# Start the login agent if it is loaded, load it if it is not, and fall
+# back to the bundle only if there is no agent at all.
+LABEL="com.clanno.pill"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+launchctl kickstart "gui/$(id -u)/$LABEL" 2>/dev/null \
+  || launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null \
+  || open "$HOME/Applications/Clanno.app"
+OPENER_SH
+chmod +x "$OPENER/Contents/MacOS/OpenClanno"
+
+# Register it so Spotlight finds it without waiting for a reindex.
+LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+[ -x "$LSREG" ] && "$LSREG" -f "$OPENER" || true
+
 # --- login agent --------------------------------------------------------
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<AGENT_EOF
@@ -107,6 +151,7 @@ launchctl bootstrap "gui/$UID" "$PLIST" 2>/dev/null || launchctl load "$PLIST"
 echo
 echo "Installed:"
 echo "  app        $APP"
+echo "  opener     $OPENER  (Spotlight: \"Open Clanno\")"
 echo "  login agent $PLIST"
 echo "  logs       /tmp/clanno.err.log"
 echo

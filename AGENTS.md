@@ -13,7 +13,8 @@ there's a strong reason; the zero-dependency install is a feature.
 ```
 clanno.py        the whole app
 test_clanno.py   14 tests, plain python, no pytest
-install.sh       builds ~/Applications/Clanno.app + a LaunchAgent
+install.sh       builds ~/Applications/Clanno.app + a LaunchAgent,
+                 plus "Open Clanno.app", a Spotlight-only opener
 icon.py          regenerates Clanno.icns from a handful of shape constants
 Clanno.icns      committed, so installing doesn't need to build it
 ```

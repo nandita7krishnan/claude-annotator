@@ -43,6 +43,10 @@ That builds `~/Applications/Clanno.app` (bundling a copy of whichever
 `python3` is first on your PATH) and installs a LaunchAgent so Clanno
 starts at every login. It's running immediately — no reboot.
 
+It also builds `~/Applications/Open Clanno.app`, a small companion whose
+only job is to start Clanno again after you've quit it. See
+[Starting it, and getting it back](#starting-it-and-getting-it-back).
+
 **3. Grant the two permissions.** See below. Clanno is usable after step 2,
 but the auto-paste won't work until you've done step 3.
 
@@ -115,6 +119,33 @@ The loop is **copy → type → Enter**, repeated. Hands stay on the keyboard.
 6. Read it and press Enter yourself.
 
 **It never presses Enter for you.** Nothing is sent until you've seen it.
+
+### Starting it, and getting it back
+
+**There is nothing to open, normally.** Clanno starts at login and sits in
+the background waiting for a copy. It has no Dock icon and no menu bar item
+(it's `LSUIElement`), so the pill appearing when you copy *is* the whole UI.
+If it's running, you're done — just copy something.
+
+**To bring it back after quitting**, open Spotlight (**Cmd+Space**) and type
+**Open Clanno**. That's the companion app, and it restarts Clanno for you.
+
+The equivalent from a terminal, if you'd rather:
+
+```bash
+launchctl kickstart gui/$UID/com.clanno.pill
+```
+
+Quitting it with the pill's **✕** is deliberate and sticky: it stays gone
+until your next login, or until you launch it again by one of the two ways
+above. That's what makes ✕ safe to use mid-task.
+
+> **The pill won't show if it's off-screen.** Clanno remembers where you
+> last dragged it, so a position saved on an external monitor can land past
+> the edge of your laptop screen once you undock. It restores clamped back
+> onto the visible screen, but a pre-existing `~/.clanno.json` from an older
+> version may still hold an off-screen `x`/`y` — delete those two keys and
+> restart if the pill seems to be running but invisible.
 
 ### Keys
 
@@ -189,6 +220,15 @@ at least `min_chars` long.
 
 **"copied — allow Accessibility to auto-paste".** The Accessibility grant is
 missing or was reset. See Permissions above.
+
+**I quit it with the ✕ and want it back.** Spotlight **Open Clanno**, or run
+`launchctl kickstart gui/$UID/com.clanno.pill`. See
+[Starting it, and getting it back](#starting-it-and-getting-it-back).
+
+**It says it's running, but no pill appears.** It may be drawing off-screen
+— most likely if you saved its position on an external display and have
+since undocked. Delete the `x` and `y` keys from `~/.clanno.json` and
+restart it; it'll come back at its default corner.
 
 **The pill never appears.** Check it's running and read the log:
 
