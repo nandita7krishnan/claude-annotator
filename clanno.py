@@ -33,6 +33,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import tkinter as tk
 
@@ -53,6 +54,10 @@ POLL_CLIP_MS = 100
 # Frontmost lookup shells out, so it runs on a background thread and the
 # UI only ever reads the cached answer.
 POLL_FRONT_MS = 400
+# Claude Code's prompt box is pinned to the bottom of the terminal window.
+# A selection made in this bottom band is the user editing their own draft,
+# not something to annotate. {"input_box_px": 0} turns the check off.
+INPUT_BOX_PX = 130
 SCRIPT_CACHE = os.path.expanduser("~/.clanno-scripts")
 
 W = 380
@@ -90,6 +95,20 @@ _ACTIVATE_NAME = """on run argv
     tell application "System Events"
         set frontmost of (first application process whose name is (item 1 of argv)) to true
     end tell
+end run"""
+
+_APP_BOUNDS = """on run argv
+    tell application (item 1 of argv) to get bounds of front window
+end run"""
+
+_WINDOW_BOUNDS = """on run argv
+    tell application "System Events"
+        tell (first application process whose name is (item 1 of argv))
+            set {wx, wy} to position of front window
+            set {ww, wh} to size of front window
+        end tell
+    end tell
+    return (wx as text) & "," & (wy as text) & "," & (ww as text) & "," & (wh as text)
 end run"""
 
 _PASTE = """on run argv
@@ -198,6 +217,46 @@ def activate_app(name: str) -> bool:
     return err is None
 
 
+def _four_ints(out):
+    try:
+        a, b, c, d = (int(float(n)) for n in (out or "").split(","))
+    except ValueError:
+        return None
+    return a, b, c, d
+
+
+def front_window_bounds(name):
+    """((x, y, w, h), None) for an app's front window, or (None, why).
+
+    The terminal's own dictionary is asked first: `bounds of front window`
+    needs only Automation, which survives a rebuild. Reading the same
+    geometry through System Events needs *Accessibility* -- the grant that
+    an ad-hoc re-sign drops every time -- so that is the fallback for
+    terminals with no AppleScript dictionary, not the first choice.
+
+    ~200ms, so this runs once per copy and never on the poll. The reason
+    for a failure is returned rather than swallowed: silently failing open
+    is indistinguishable from the caller's check being wrong, and both
+    look like "the pill still steals focus".
+    """
+    if not name:
+        return None, "no app name"
+    out, err = run_osascript(_APP_BOUNDS, name)
+    if not err:
+        four = _four_ints(out)  # {left, top, right, bottom}
+        if four:
+            left, top, right, bottom = four
+            return (left, top, right - left, bottom - top), None
+        err = f"unparseable bounds {out!r}"
+    out, sys_err = run_osascript(_WINDOW_BOUNDS, name)
+    if sys_err:
+        return None, f"{err}; via System Events: {sys_err}"
+    four = _four_ints(out)  # position + size
+    if not four:
+        return None, f"{err}; via System Events: unparseable {out!r}"
+    return four, None
+
+
 def needs_accessibility(err: str) -> bool:
     low = err.lower()
     return (
@@ -272,6 +331,9 @@ class AnnotatorApp:
         # {"autofocus": false} keeps the pill passive -- it still captures,
         # you just click or Cmd+Tab in when you're ready to type.
         self.autofocus = bool(cfg.get("autofocus", True))
+        # How much of the bottom of the terminal window counts as the
+        # input box; 0 disables the check. See from_input_box().
+        self.input_box_px = int(cfg.get("input_box_px", INPUT_BOX_PX))
         self._stop_evt = threading.Event()
         self._watcher = None
 
@@ -341,6 +403,7 @@ class AnnotatorApp:
             self._front = frontmost_app()
             self._watcher = threading.Thread(target=self._watch_front, daemon=True)
             self._watcher.start()
+        self._log(f"started (pid {self._self_pid})")
         self.poll_clipboard()
         self.poll_frontmost()
 
@@ -536,9 +599,34 @@ class AnnotatorApp:
 
     def _watch_front(self):
         while not self._stop_evt.wait(POLL_FRONT_MS / 1000):
-            name = frontmost_app()
+            try:
+                name = frontmost_app()
+            except Exception:
+                # A dead watcher freezes _front on whatever was in front
+                # last -- usually the terminal -- and then every copy,
+                # from anywhere, looks like ours. Never let one bad
+                # lookup end the thread.
+                continue
             if name:
                 self._front = name
+
+    def confirm_front(self):
+        """Who is in front *right now*, refreshing the cache.
+
+        The cached _front is up to POLL_FRONT_MS + one lookup old. That is
+        fine for deciding whether to be on screen, but not for deciding
+        whether a copy is ours: a stale answer attributes an editor's copy
+        to the terminal and steals focus mid-edit. A clipboard change is
+        rare -- once per Cmd+C -- so the ~50ms lookup here is not the hot
+        path the 100ms poll is.
+        """
+        try:
+            name = frontmost_app()
+        except Exception:
+            name = None
+        if name:
+            self._front = name
+        return self._front
 
     def poll_frontmost(self):
         """Only be on screen while the terminal you copy from is in front."""
@@ -558,6 +646,48 @@ class AnnotatorApp:
     def is_terminal(self, name) -> bool:
         return bool(name) and name.casefold() in self.terminals
 
+    def _log(self, message):
+        """One line per copy, to /tmp/clanno.err.log. Copies are rare."""
+        print(f"[clanno] {message}", file=sys.stderr, flush=True)
+
+    def _pointer_xy(self):
+        """Where the pointer is. A native Tk call, no subprocess."""
+        try:
+            return self.root.winfo_pointerx(), self.root.winfo_pointery()
+        except tk.TclError:
+            return None
+
+    def from_input_box(self, front) -> bool:
+        """Was this copied out of the terminal's input box?
+
+        Claude Code's prompt sits at the bottom of the window, so a
+        selection that ended down there is the user's own draft -- copying
+        it to move it or retype it must not summon the pill. Asking the
+        terminal what was actually selected needs the Accessibility API,
+        which needs PyObjC, so this reads where the selection ended
+        instead. It fails open: a window it can't measure is treated as a
+        normal copy, because grabbing focus is the wanted default.
+        """
+        if not self.input_box_px:
+            return False
+        where = self._pointer_xy()
+        bounds, why = front_window_bounds(front)
+        if where is None or bounds is None:
+            # Can't measure -- treat it as a normal copy, but say so: a
+            # silent fail-open is indistinguishable from the check being
+            # wrong, and that has cost real debugging time.
+            self._log(f"copy from {front!r}: pointer={where} -- can't "
+                      f"measure the window ({why}), treating it as a "
+                      "normal copy")
+            return False
+        px, py = where
+        x, y, w, h = bounds
+        inside = x <= px <= x + w and py >= y + h - self.input_box_px
+        self._log(f"copy from {front!r}: pointer={where} window={bounds} "
+                  f"band={self.input_box_px} -> "
+                  f"{'input box, ignored' if inside else 'transcript, captured'}")
+        return inside
+
     def _read_clipboard(self):
         try:
             return self.root.clipboard_get()
@@ -568,7 +698,9 @@ class AnnotatorApp:
         clip = self._read_clipboard()
         if clip != self.last_clip and clip.strip():
             self.last_clip = clip
-            front = self._front
+            front = self.confirm_front()
+            self._log(f"clipboard changed ({len(clip.strip())} chars), "
+                      f"front={front!r}")
             if not self.is_terminal(front):
                 # Copied in an editor, a browser, anywhere else -- not ours.
                 # Don't capture it, don't steal focus, don't retarget.
@@ -580,6 +712,13 @@ class AnnotatorApp:
                 # Too small to be a real selection. Ignore it completely --
                 # don't capture, don't queue a half-typed note, don't focus.
                 self._set_status(f"ignored a {len(clip.strip())}-char copy", DIM)
+                self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
+                return
+            if self.from_input_box(front):
+                # The user's own draft, not Claude's reply. Ignore it
+                # entirely -- capturing it would displace a real snippet
+                # and queue a half-typed note against text they wrote.
+                self._set_status("ignored a copy from your prompt", DIM)
                 self._reschedule("_clip_timer", POLL_CLIP_MS, self.poll_clipboard)
                 return
             self.target_app = front

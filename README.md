@@ -66,9 +66,17 @@ Two separate macOS permissions, and they behave very differently.
 
 ### Automation — required, prompts you
 
-Lets Clanno see which app is frontmost and switch back to your terminal.
-**macOS will show a dialog** the first time ("Clanno wants to control
-System Events"). Click OK. Nothing works without this.
+Lets Clanno see which app is frontmost, measure your terminal's window,
+and switch back to it. **macOS will show a dialog** the first time
+("Clanno wants to control System Events") and a second one the first time
+you copy in a given terminal ("Clanno wants to control Terminal"). Click
+**Allow** on both. Nothing works without the first, and the second is how
+it tells a copy from your prompt box apart from a copy of Claude's reply.
+
+Both prompts come back after every reinstall, because the bundle is
+ad-hoc signed and its code identity changes each rebuild. While a prompt
+is on screen it holds the frontmost slot, so copies made *during* it are
+ignored — answer it, then carry on.
 
 ### Accessibility — optional, does NOT prompt you
 
@@ -183,7 +191,8 @@ Optional. `~/.clanno.json`, created on first drag:
   "terminals": ["My Terminal"],
   "min_chars": 3,
   "autofocus": true,
-  "compact": true
+  "compact": true,
+  "input_box_px": 130
 }
 ```
 
@@ -193,6 +202,7 @@ Optional. `~/.clanno.json`, created on first drag:
 | `min_chars` | `3` | Copies shorter than this are ignored entirely |
 | `autofocus` | `true` | `false` = never take your keyboard; you click in when ready |
 | `compact` | `true` | `false` = multi-line block output instead of one line |
+| `input_box_px` | `130` | Height of the bottom strip treated as your prompt; `0` disables |
 | `x`, `y` | — | Window position; written for you when you drag the pill |
 
 Built-in terminals: Terminal, iTerm2, iTerm, Warp, Alacritty, kitty,
@@ -205,6 +215,11 @@ WezTerm, Ghostty, Hyper, Tabby, rio, Contour.
   grab, no change of paste target.
 - **What's big enough**: copies under `min_chars` are ignored, so a stray
   prompt character can't take your keyboard mid-sentence.
+- **Whether you meant it**: copies made in the bottom strip of the terminal
+  window are ignored. That's where Claude Code's input box sits, so copying
+  your own draft around doesn't summon the pill. Raise `input_box_px` if your
+  prompt box is taller than the default strip, or set it to `0` to switch the
+  check off.
 - **Which terminal to paste into**: whichever terminal you last copied from.
 - **When to be on screen**: only while that terminal (or the pill) is
   frontmost.
@@ -243,6 +258,15 @@ two would fight over the clipboard. Quit the other with its `✕`, or
 
 **It grabs focus when I didn't want it to.** Set `"autofocus": false`. The
 pill still catches snippets; you click in when you actually want to write.
+
+**Copying my own draft in the prompt still summons the pill.** The strip it
+treats as the input box is too short — raise `input_box_px`. It's measured
+in pixels up from the bottom of the terminal window, and it only knows where
+your selection *ended*, so a copy made after moving the mouse away still
+counts as a normal one.
+
+**Copying the last few lines of Claude's reply does nothing.** The opposite
+problem: `input_box_px` is reaching too far up the window. Lower it.
 
 **I want it gone right now.** `./install.sh --uninstall`.
 
